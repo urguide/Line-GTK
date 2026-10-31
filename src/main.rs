@@ -1,5 +1,7 @@
+mod call_audio;
 mod config;
 mod core_bridge;
+mod core_catalog;
 mod desktop_notify;
 mod discord_rpc;
 mod i18n;
@@ -53,11 +55,11 @@ vah264dec:MAX,vah265dec:MAX,vavp9dec:MAX,vaav1dec:MAX";
 fn discover_repo_root() -> Result<PathBuf> {
     if let Ok(p) = env::var("LINE_GTK_ROOT") {
         let root = PathBuf::from(p);
-        if root.join("protocol/src/main.ts").exists() {
+        if root.join("protocol/src/launcher.ts").exists() {
             return Ok(root);
         }
         anyhow::bail!(
-            "LINE_GTK_ROOT={} missing protocol/src/main.ts",
+            "LINE_GTK_ROOT={} missing protocol/src/launcher.ts",
             root.display()
         );
     }
@@ -78,9 +80,9 @@ fn discover_repo_root() -> Result<PathBuf> {
         candidates.push(p.to_path_buf());
     }
     for c in candidates {
-        if c.join("protocol/src/main.ts").exists() {
+        if c.join("protocol/src/launcher.ts").exists() {
             return Ok(c);
         }
     }
-    anyhow::bail!("could not find LINE GTK resources (protocol/src/main.ts); set LINE_GTK_ROOT")
+    anyhow::bail!("could not find LINE GTK resources (protocol/src/launcher.ts); set LINE_GTK_ROOT")
 }

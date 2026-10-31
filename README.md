@@ -13,8 +13,16 @@ checkpoints use SQLite transactions; legacy JSON histories are imported once
 after login and retained as backups. The TypeScript bridge performs LINE API
 requests and E2EE decoding; decoded attachments cross IPC as temporary file paths,
 not JSON/base64 payloads. Rust validates those paths, stores media and generates
-thumbnails with ffmpeg. Login, contacts, stickers, sending and experimental calls
-continue to use linejs.
+thumbnails with ffmpeg. Rust also owns chat/contact catalog caches, sticker
+catalogs and CDN caching, outgoing attachment staging/previews/durations, message
+presentation, and PulseAudio capture/playback process lifecycles.
+
+The remaining TypeScript is a narrow protocol adapter: authentication and token
+storage, individual LINE RPC calls, E2EE, LINE events, and the experimental
+PLANET/Opus wire protocol. It runs inside a permission-restricted Deno worker:
+only `protocol-state/` and `cache/transfer/` are readable/writable; subprocess,
+FFI and system-query permissions are denied. Audio uses a private Unix socket
+to Rust, and attachments use file paths instead of JSON/base64 payloads.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

@@ -783,7 +783,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
 }
 
 pub(super) fn saved_auth_exists(data_dir: &std::path::Path) -> bool {
-    let path = data_dir.join("auth-token.txt");
+    let path = data_dir.join("protocol-state/auth-token.txt");
     match std::fs::read_to_string(&path) {
         Ok(s) => !s.trim().is_empty(),
         Err(_) => false,

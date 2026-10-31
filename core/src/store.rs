@@ -100,7 +100,8 @@ impl Store {
                account TEXT NOT NULL, chat TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(account,chat));
              CREATE TABLE IF NOT EXISTS tombstones (
                account TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(account,id));
-             CREATE TABLE IF NOT EXISTS migrations (path TEXT PRIMARY KEY, account TEXT NOT NULL);"
+             CREATE TABLE IF NOT EXISTS migrations (path TEXT PRIMARY KEY, account TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS catalogs (account TEXT NOT NULL,kind TEXT NOT NULL,updated INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(account,kind));"
         )?;
         Ok(Self {
             db,
@@ -113,6 +114,35 @@ impl Store {
         self.account = account.to_owned();
     }
 
+    pub fn catalog(&self, kind: &str, ttl: i64) -> Result<Option<Value>> {
+        let body: Option<String> = self
+            .db
+            .query_row(
+                "SELECT body FROM catalogs WHERE account=?1 AND kind=?2 AND updated>=?3",
+                params![self.account, kind, now().saturating_sub(ttl)],
+                |r| r.get(0),
+            )
+            .optional()?;
+        body.map(|s| serde_json::from_str(&s).map_err(Into::into))
+            .transpose()
+    }
+
+    pub fn save_catalog(&self, kind: &str, body: &Value) -> Result<()> {
+        self.db.execute(
+            "INSERT OR REPLACE INTO catalogs VALUES(?1,?2,?3,?4)",
+            params![self.account, kind, now(), body.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn invalidate_catalogs(&self) -> Result<()> {
+        self.db.execute(
+            "UPDATE catalogs SET updated=0 WHERE account=?1 AND kind!='recent_stickers'",
+            params![self.account],
+        )?;
+        Ok(())
+    }
+
     pub fn set_retention(&mut self, mode: &str) {
         self.ttl_ms = match mode {
             "day" => 86_400_000,
@@ -121,6 +151,25 @@ impl Store {
             "forever" => i64::MAX,
             _ => 360 * 86_400_000,
         };
+    }
+
+    pub fn decorate_chats(&self, value: &mut Value) -> Result<()> {
+        if let Some(rows) = value["chats"].as_array_mut() {
+            for row in rows {
+                let mid = row["mid"].as_str().unwrap_or_default();
+                let latest:Option<String>=self.db.query_row("SELECT body FROM messages WHERE account=?1 AND chat=?2 ORDER BY created DESC,LENGTH(id) DESC,id DESC LIMIT 1",params![self.account,mid],|r|r.get(0)).optional()?;
+                if let Some(latest) = latest {
+                    let message: Value = serde_json::from_str(&latest)?;
+                    row["preview"] = message["text"].clone();
+                    if message["createdTime"].as_i64().unwrap_or(0)
+                        > row["lastActivity"].as_i64().unwrap_or(0)
+                    {
+                        row["lastActivity"] = message["createdTime"].clone();
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn cutoff(&self) -> i64 {

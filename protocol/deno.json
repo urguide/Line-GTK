@@ -1,8 +1,8 @@
 {
   "tasks": {
-    "sidecar": "deno run --no-prompt --allow-read --allow-write --allow-net --allow-run=ffmpeg,ffprobe --allow-sys --allow-env src/main.ts",
-    "dev": "deno run --no-prompt --watch --allow-read --allow-write --allow-net --allow-run=ffmpeg,ffprobe --allow-sys --allow-env src/main.ts",
-    "check": "deno fmt --check && deno lint && deno check src/main.ts && deno test --allow-read --allow-write --allow-env=Q_DEBUG tests/"
+    "sidecar": "deno run --unstable-worker-options --no-prompt --allow-read --allow-write --allow-net --allow-env src/launcher.ts",
+    "dev": "deno run --unstable-worker-options --no-prompt --watch --allow-read --allow-write --allow-net --allow-env src/launcher.ts",
+    "check": "deno fmt --check && deno lint && deno check --unstable-worker-options src/launcher.ts src/runtime.ts && deno test --unstable-worker-options --allow-read --allow-write --allow-env=Q_DEBUG tests/"
   },
   "lint": {
     "exclude": ["vendor/"],

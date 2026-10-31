@@ -22,18 +22,21 @@ type Replies = Arc<Mutex<HashMap<u64, mpsc::SyncSender<Response>>>>;
 
 #[derive(Clone)]
 pub struct CoreBridge {
+    pub audio: crate::call_audio::AudioHost,
+    data: PathBuf,
     pub commands: mpsc::Sender<CoreCommand>,
     replies: Replies,
     generation: Arc<AtomicU64>,
 }
 
-struct Ipc {
+pub(crate) struct Ipc {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     replies: Replies,
-    ids: Arc<AtomicU64>,
+    pub(crate) ids: Arc<AtomicU64>,
     generation: Arc<AtomicU64>,
     events: Sender<ProtocolEvent>,
-    data: PathBuf,
+    pub(crate) data: PathBuf,
+    pub(crate) asset_at: Mutex<Option<std::time::Instant>>,
 }
 
 impl CoreBridge {
@@ -64,12 +67,15 @@ impl CoreBridge {
             generation: generation.clone(),
             events,
             data: data.to_owned(),
+            asset_at: Mutex::new(None),
         };
         let engine = Engine::new(store, ipc, generation.clone(), cache.join("messages"));
         std::thread::Builder::new()
             .name("line-rust-core".into())
             .spawn(move || engine.run(rx))?;
         Ok(Self {
+            audio: Default::default(),
+            data: data.to_owned(),
             commands: tx,
             replies,
             generation,
@@ -94,6 +100,20 @@ impl CoreBridge {
             return true;
         }
         match response.event.as_deref() {
+            Some("host_audio_start") => {
+                if let Err(error) = self.audio.start(
+                    &self.data.join("protocol-state/audio.sock"),
+                    response.extra["input"].as_str().unwrap_or("default"),
+                    response.extra["output"].as_str().unwrap_or("default"),
+                ) {
+                    tracing::warn!("audio start: {error}");
+                }
+                return true;
+            }
+            Some("host_audio_stop") => {
+                self.audio.stop();
+                return true;
+            }
             Some("session_failed") => {
                 let _ = self.commands.send(CoreCommand::Session {
                     account: String::new(),
@@ -121,6 +141,16 @@ impl CoreBridge {
                         generation,
                     });
                 }
+                return true;
+            }
+            Some("catalog_invalidated") => {
+                let _ = self.commands.send(CoreCommand::Operation {
+                    id: 0,
+                    method: "invalidate_catalogs".into(),
+                    params: json!({}),
+                    generation,
+                });
+                return true;
             }
             Some("message_unsent") => {
                 if let (Some(chat), Some(message)) = (
@@ -153,7 +183,7 @@ impl CoreBridge {
 }
 
 impl Ipc {
-    fn active(&self, generation: u64) -> Result<()> {
+    pub(crate) fn active(&self, generation: u64) -> Result<()> {
         if self.generation.load(Ordering::SeqCst) != generation {
             bail!("session_changed");
         }
@@ -168,7 +198,7 @@ impl Ipc {
         Ok(path)
     }
 
-    fn thumb(&self, file: &Path, dest: &Path) -> Result<()> {
+    pub(crate) fn thumb(&self, file: &Path, dest: &Path) -> Result<()> {
         let status = Command::new("ffmpeg")
             .args(["-v", "error", "-y", "-i"])
             .arg(file)
@@ -188,6 +218,9 @@ impl Ipc {
 }
 
 impl Transport for Ipc {
+    fn application(&self, method: &str, params: Value, generation: u64) -> Result<Value> {
+        self.application_operation(method, params, generation)
+    }
     fn call(&self, method: &str, params: Value, generation: u64) -> Result<Value> {
         self.active(generation)?;
         let id = self.ids.fetch_add(1, Ordering::SeqCst);
@@ -249,6 +282,9 @@ impl Transport for Ipc {
             bail!("invalid media ID");
         }
         let kind = row["contentType"].as_str().unwrap_or("FILE");
+        if kind == "STICKER" {
+            return self.sticker_media(row, generation);
+        }
         let mut updated = row.clone();
         let dir = self.data.join("cache/media");
         crate::config::ensure_private_dir(&dir)?;
@@ -299,7 +335,26 @@ impl Transport for Ipc {
             if !temporary.starts_with(self.data.join("cache/transfer").canonicalize()?) {
                 bail!("invalid transfer location");
             }
-            let ext = downloaded["extension"].as_str().unwrap_or("bin");
+            let mime = downloaded["mime"].as_str().unwrap_or_default();
+            let ext = if mime.contains("png") {
+                "png"
+            } else if mime.contains("gif") {
+                "gif"
+            } else if mime.contains("webp") {
+                "webp"
+            } else if kind == "IMAGE" {
+                "jpg"
+            } else if kind == "VIDEO" {
+                "mp4"
+            } else if mime.contains("mpeg") {
+                "mp3"
+            } else if mime.contains("ogg") {
+                "ogg"
+            } else if kind == "AUDIO" {
+                "m4a"
+            } else {
+                "bin"
+            };
             if ![
                 "jpg", "png", "gif", "webp", "mp4", "m4a", "mp3", "ogg", "bin",
             ]
@@ -348,6 +403,13 @@ impl Transport for Ipc {
             let chat_mid = event["chatMid"].as_str().unwrap_or_default().to_owned();
             let message_id = event["messageId"].as_str().unwrap_or_default().to_owned();
             match event["event"].as_str() {
+                Some("message") => serde_json::from_value(event["message"].clone())
+                    .ok()
+                    .map(ProtocolEvent::Message),
+                Some("message_unsent") => Some(ProtocolEvent::MessageUnsent {
+                    chat_mid,
+                    message_id,
+                }),
                 Some("media_ready") => Some(ProtocolEvent::MediaReady {
                     chat_mid,
                     message_id,

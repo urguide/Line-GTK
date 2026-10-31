@@ -11,6 +11,10 @@ type CallRuntime = {
 };
 
 let runtime: CallRuntime;
+let audioSocket = "";
+export function setAudioSocket(path: string) {
+  audioSocket = path;
+}
 
 export function configureCallRuntime(next: CallRuntime) {
   runtime = next;
@@ -575,53 +579,20 @@ async function startCallAudioIO(
   const micDev = callAudioInput || "default";
   const spkDev = callAudioOutput || "default";
 
-  const spawnMic = () =>
-    new Deno.Command("ffmpeg", {
-      args: [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        "pulse",
-        "-i",
-        micDev,
-        "-ac",
-        "1",
-        "-ar",
-        String(SAMPLE_RATE),
-        "-f",
-        "s16le",
-        "pipe:1",
-      ],
-      stdout: "piped",
-      stderr: "piped",
-    }).spawn();
-
-  const spawnSpeaker = () =>
-    new Deno.Command("ffmpeg", {
-      args: [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        "s16le",
-        "-ar",
-        String(SAMPLE_RATE),
-        "-ac",
-        "1",
-        "-i",
-        "pipe:0",
-        "-f",
-        "pulse",
-        spkDev,
-      ],
-      stdin: "piped",
-      stdout: "null",
-      stderr: "piped",
-    }).spawn();
-
-  let mic = spawnMic();
-  let speaker = spawnSpeaker();
+  emitEvent("host_audio_start", { input: micDev, output: spkDev });
+  let socket: Deno.UnixConn | null = null;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      socket = await Deno.connect({ transport: "unix", path: audioSocket });
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  if (!socket) {
+    emitEvent("host_audio_stop");
+    throw new Error("host audio unavailable");
+  }
 
   const codec = await opusCodecFactory();
   // Match example/call_on_command.ts defaults (signal=music, vbr=false, no bitrate).
@@ -637,8 +608,8 @@ async function startCallAudioIO(
     channels: 1,
   });
 
-  let micReader = mic.stdout.getReader();
-  let spkWriter = speaker.stdin.getWriter();
+  const micReader = socket.readable.getReader();
+  const spkWriter = socket.writable.getWriter();
   let pending = new Uint8Array(0);
   let lastMicAt = Date.now();
   let opusFailLog = 0;
@@ -734,20 +705,9 @@ async function startCallAudioIO(
         if (!stopped) console.error("[call mic]", e);
       }
       if (stopped) break;
-      console.error("[call mic] capture ended — restarting ffmpeg");
-      try {
-        mic.kill("SIGTERM");
-      } catch { /* ignore */ }
-      await sleepMs(200);
-      if (stopped) break;
-      try {
-        mic = spawnMic();
-        micReader = mic.stdout.getReader();
-        pending = new Uint8Array(0);
-      } catch (e) {
-        console.error("[call mic restart]", e);
-        await sleepMs(500);
-      }
+      emitEvent("host_audio_stop");
+      void endActiveCall();
+      break;
     }
     try {
       encoder.close?.();
@@ -803,15 +763,9 @@ async function startCallAudioIO(
             await spkWriter.write(bytes);
           } catch (e) {
             if (stopped) break;
-            console.error("[call speaker] pulse write failed — restarting", e);
-            try {
-              speaker.kill("SIGTERM");
-            } catch { /* ignore */ }
-            await sleepMs(150);
-            if (stopped) break;
-            speaker = spawnSpeaker();
-            spkWriter = speaker.stdin.getWriter();
-            await spkWriter.write(bytes).catch(() => {});
+            console.error("[call speaker] host audio disconnected", e);
+            void endActiveCall();
+            break;
           }
         } catch (e) {
           if (!stopped) console.error("[call speaker frame]", e);
@@ -840,12 +794,10 @@ async function startCallAudioIO(
   return () => {
     stopped = true;
     clearInterval(keepalive);
+    emitEvent("host_audio_stop");
     try {
-      mic.kill("SIGTERM");
-    } catch { /* ignore */ }
-    try {
-      speaker.kill("SIGTERM");
-    } catch { /* ignore */ }
+      socket.close();
+    } catch { /* already closed */ }
     try {
       micReader.cancel();
     } catch { /* ignore */ }

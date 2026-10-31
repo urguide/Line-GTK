@@ -1,0 +1,88 @@
+import { assertEquals, assertRejects } from "@std/assert";
+import type { Client } from "@evex/linejs";
+import { createApi } from "../src/api.ts";
+import { packRaw, unpackRaw } from "../src/raw_codec.ts";
+import { coerceI64 } from "../src/messages.ts";
+import { unsendFromOperation } from "../src/events.ts";
+
+Deno.test("API forwards exact read receipt, reply and withdrawal IDs", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const client = {
+    base: {
+      getReqseq: () => Promise.resolve(4),
+      talk: {
+        sendMessage: (p: Record<string, unknown>) => {
+          seen.push(p);
+          return Promise.resolve({ id: "9007199254740994" });
+        },
+        sendChatChecked: (p: Record<string, unknown>) => {
+          seen.push(p);
+          return Promise.resolve();
+        },
+        unsendMessage: (p: Record<string, unknown>) => {
+          seen.push(p);
+          return Promise.resolve();
+        },
+      },
+    },
+  } as unknown as Client;
+  const api = createApi(() => client, "/unused");
+  await api("bridge_send_text", {
+    chatMid: "u1",
+    text: "reply",
+    relatedMessageId: "9007199254740993",
+    e2ee: true,
+  });
+  await api("bridge_mark_read", {
+    chatMid: "u1",
+    lastMessageId: "9007199254740993",
+  });
+  await api("bridge_unsend", { chatMid: "u1", messageId: "9007199254740993" });
+  assertEquals(seen[0].relatedMessageId, "9007199254740993");
+  assertEquals(seen[0].e2ee, true);
+  assertEquals(seen[1], {
+    chatMid: "u1",
+    lastMessageId: "9007199254740993",
+    seq: 4,
+  });
+  assertEquals(seen[2], { messageId: "9007199254740993", seq: 4 });
+});
+Deno.test("API rejects concurrent requests rather than introducing a second queue", async () => {
+  const gate = Promise.withResolvers<unknown>();
+  const client = {
+    base: { talk: { getAllContactIds: () => gate.promise } },
+  } as unknown as Client;
+  const api = createApi(() => client, "/unused");
+  const first = api("bridge_contact_ids", {});
+  await assertRejects(
+    () => api("bridge_contact_ids", {}),
+    Error,
+    "bridge_busy",
+  );
+  gate.resolve([]);
+  await first;
+});
+Deno.test("media transfer rejects paths outside the exchange directory", async () => {
+  const api = createApi(() => ({} as Client), "/unused");
+  await assertRejects(
+    () => api("bridge_send_media", { transferName: "../secret" }),
+    Error,
+    "invalid_transfer_name",
+  );
+});
+Deno.test("wire codecs retain i64 and bytes and decode withdrawal events", () => {
+  assertEquals(coerceI64("9007199254740993"), 9007199254740993n);
+  const raw = unpackRaw(
+    packRaw({ id: 9007199254740993n, chunks: [new Uint8Array([0, 255])] }),
+  ) as { id: string; chunks: Uint8Array[] };
+  assertEquals(raw.id, "9007199254740993");
+  assertEquals([...raw.chunks[0]], [0, 255]);
+  assertEquals(
+    unsendFromOperation({
+      type: "NOTIFIED_DESTROY_MESSAGE",
+      param1: "group",
+      param2: "9007199254740993",
+    }),
+    { chatMid: "group", messageId: "9007199254740993" },
+  );
+});

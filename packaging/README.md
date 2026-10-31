@@ -1,6 +1,7 @@
 # Distribution notes
 
-Release and AUR builds compile `protocol/src/main.ts` into
+Release and AUR builds compile `protocol/src/launcher.ts` (with its sandboxed
+`runtime.ts` worker) into
 `protocol/line-gtk-protocol`. The resulting package is self-contained and does
 not download JavaScript dependencies on first launch. Deno is a build-time tool
 only for packaged releases; source-tree development can still use Deno directly.

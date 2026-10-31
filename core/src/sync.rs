@@ -15,9 +15,18 @@ pub trait Transport: Send + 'static {
     fn call(&self, method: &str, params: Value, generation: u64) -> Result<Value>;
     fn materialize(&self, message: &Value, generation: u64) -> Result<Value>;
     fn emit(&self, event: Value);
+    fn application(&self, method: &str, params: Value, generation: u64) -> Result<Value> {
+        self.call(method, params, generation)
+    }
 }
 
 pub enum Command {
+    Operation {
+        id: u64,
+        method: String,
+        params: Value,
+        generation: u64,
+    },
     Session {
         account: String,
         generation: u64,
@@ -154,7 +163,14 @@ impl<T: Transport> Engine<T> {
         );
         self.last_request = Some(Instant::now());
         self.valid(generation)?;
-        let page: Page = serde_json::from_value(result?)?;
+        let mut page: Page = serde_json::from_value(result?)?;
+        for row in &mut page.messages {
+            if let Some(raw) = row.get("decodedMessage") {
+                let mut normalized = crate::message::normalize(raw, &self.account);
+                normalized["rawMessage"] = row["rawMessage"].clone();
+                *row = normalized;
+            }
+        }
         if page.messages.len() > 20 {
             bail!("protocol returned oversized history page");
         }
@@ -225,6 +241,107 @@ impl<T: Transport> Engine<T> {
 
     fn command(&mut self, command: Command) -> Result<bool> {
         match command {
+            Command::Operation {
+                id,
+                method,
+                mut params,
+                generation,
+            } => {
+                let result = (|| {
+                    self.valid(generation)?;
+                    if method == "invalidate_catalogs" {
+                        self.store.invalidate_catalogs()?;
+                        return Ok(json!({}));
+                    }
+                    let cached_kind = matches!(
+                        method.as_str(),
+                        "list_chats" | "list_friends" | "list_stickers"
+                    );
+                    if cached_kind
+                        && !params["force"].as_bool().unwrap_or(false)
+                        && let Some(mut value) = self.store.catalog(&method, 30 * 60_000)?
+                    {
+                        self.store.decorate_chats(&mut value)?;
+                        return Ok(value);
+                    }
+                    params["account"] = json!(self.account);
+                    if method == "list_stickers" {
+                        params["recent"] = self
+                            .store
+                            .catalog("recent_stickers", i64::MAX)?
+                            .unwrap_or(json!([]));
+                    }
+                    self.pace(self.last_request, self.page_pause, generation)?;
+                    let mut value =
+                        self.transport
+                            .application(&method, params.clone(), generation)?;
+                    self.last_request = Some(Instant::now());
+                    self.valid(generation)?;
+                    if cached_kind {
+                        self.store.decorate_chats(&mut value)?;
+                        self.store.save_catalog(&method, &value)?;
+                    }
+                    if method.starts_with("send_") {
+                        if let Some(raw) = value.get("rawMessage") {
+                            let mut message = crate::message::normalize(raw, &self.account);
+                            message["from"] = json!(self.account);
+                            message["to"] = params["chatMid"].clone();
+                            message["mine"] = json!(true);
+                            if method == "send_sticker" {
+                                message["stickerId"] = params["stickerId"].clone();
+                                message["stickerPackageId"] = params["packageId"].clone();
+                                message["contentType"] = json!("STICKER");
+                            }
+                            for key in ["filePath", "imagePath", "audioPath", "fileName"] {
+                                if !value[key].is_null() {
+                                    message[key] = value[key].clone();
+                                }
+                            }
+                            message["rawMessage"] = raw.clone();
+                            let chat = params["chatMid"].as_str().unwrap_or_default();
+                            self.store
+                                .save_messages(chat, std::slice::from_ref(&message))?;
+                            self.store.invalidate(chat)?;
+                            self.queue_media(chat, std::slice::from_ref(&message), generation);
+                            if let Some(object) = message.as_object_mut() {
+                                object.remove("rawMessage");
+                            }
+                            value = json!({"message":message});
+                        }
+                        self.store.invalidate_catalogs()?;
+                        if method == "send_sticker" {
+                            let mut recent = self
+                                .store
+                                .catalog("recent_stickers", i64::MAX)?
+                                .and_then(|v| v.as_array().cloned())
+                                .unwrap_or_default();
+                            recent.retain(|s| s["stickerId"] != params["stickerId"]);
+                            recent.insert(0, params.clone());
+                            recent.truncate(200);
+                            self.store.save_catalog("recent_stickers", &json!(recent))?;
+                        }
+                    }
+                    if matches!(method.as_str(), "add_friend" | "mute_chat" | "clear_cache") {
+                        self.store.invalidate_catalogs()?;
+                    }
+                    if method == "unsend_message" {
+                        self.store.unsend(
+                            params["chatMid"].as_str().unwrap_or_default(),
+                            params["messageId"].as_str().unwrap_or_default(),
+                        )?;
+                    }
+                    if method == "clear_cache"
+                        && matches!(params["kind"].as_str(), Some("all" | "messages"))
+                    {
+                        self.background.clear();
+                        self.queued_media.clear();
+                        self.queued_gaps.clear();
+                        self.store.clear()?;
+                    }
+                    Ok(value)
+                })();
+                self.response(id, result, generation);
+            }
             Command::Stop => return Ok(false),
             Command::Retention(mode) => self.store.set_retention(&mode),
             Command::Session {
@@ -300,13 +417,25 @@ impl<T: Transport> Engine<T> {
             }
             Command::Live {
                 chat,
-                message,
+                mut message,
                 generation,
             } => {
                 self.valid(generation)?;
+                if let Some(raw) = message.get("decodedMessage") {
+                    let mut normalized = crate::message::normalize(raw, &self.account);
+                    normalized["rawMessage"] = message["rawMessage"].clone();
+                    message = normalized;
+                }
                 self.store
                     .save_messages(&chat, std::slice::from_ref(&message))?;
                 self.store.invalidate(&chat)?;
+                self.store.invalidate_catalogs()?;
+                let mut visible = message.clone();
+                if let Some(obj) = visible.as_object_mut() {
+                    obj.remove("rawMessage");
+                }
+                self.transport
+                    .emit(json!({"event":"message","message":visible}));
                 self.queue_media(&chat, &[message], generation);
             }
             Command::Unsend {

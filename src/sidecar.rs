@@ -69,12 +69,26 @@ impl Sidecar {
     }
 
     fn start_process(&self) -> Result<()> {
-        let script = self.repo_root.join("protocol/src/main.ts");
+        let script = self.repo_root.join("protocol/src/launcher.ts");
         let compiled = self.repo_root.join("protocol/line-gtk-protocol");
         if !compiled.is_file() && !script.exists() {
             return Err(anyhow!("protocol sidecar missing at {}", script.display()));
         }
         crate::config::ensure_private_dir(&self.data_dir)?;
+        let protocol_data = self.data_dir.join("protocol-state");
+        crate::config::ensure_private_dir(&protocol_data)?;
+        crate::config::ensure_private_dir(&self.data_dir.join("cache/transfer"))?;
+        let migration_marker = protocol_data.join("legacy-imported");
+        if !migration_marker.exists() {
+            for name in ["auth-token.txt", "auth-device.txt", "linejs-storage.json"] {
+                let source = self.data_dir.join(name);
+                let dest = protocol_data.join(name);
+                if source.is_file() && !dest.exists() {
+                    std::fs::copy(source, dest)?;
+                }
+            }
+            std::fs::write(&migration_marker, b"1")?;
+        }
         let cfg = crate::config::AppConfig::load(&self.data_dir);
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -85,6 +99,7 @@ impl Sidecar {
             let mut command = Command::new(&deno);
             command
                 .arg("run")
+                .arg("--unstable-worker-options")
                 .arg("--no-prompt")
                 // Attachments may be selected from anywhere, but writes remain
                 // confined to application data. Network endpoints are negotiated
@@ -92,14 +107,13 @@ impl Sidecar {
                 .arg("--allow-read")
                 .arg(format!("--allow-write={}", self.data_dir.display()))
                 .arg("--allow-net")
-                .arg("--allow-run=ffmpeg,ffprobe")
-                .arg("--allow-sys")
                 .arg("--allow-env=HOME,PATH,DENO_DIR,Q_DEBUG,NODE_DEBUG,NO_COLOR,LINE_GTK_DATA,LINE_GTK_LANG,LINE_GTK_CACHE_RETENTION,LINE_GTK_AUDIO_INPUT,LINE_GTK_AUDIO_OUTPUT,LINE_DEVICE,LINE_VERSION,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_CALL_OPUS_SIGNAL,LINE_CALL_DEBUG")
                 .arg(&script);
             (command, deno)
         };
 
         let mut child = command
+            .arg(&self.data_dir)
             .current_dir(self.repo_root.join("protocol"))
             .env("LINE_GTK_DATA", &self.data_dir)
             .env("LINE_GTK_LANG", cfg.language.clone())
@@ -172,6 +186,7 @@ impl Sidecar {
         // Drop stale auth so Ready always goes through QR again.
         for name in ["auth-token.txt", "auth-device.txt"] {
             let _ = std::fs::remove_file(self.data_dir.join(name));
+            let _ = std::fs::remove_file(self.data_dir.join("protocol-state").join(name));
         }
         self.start_process()
     }
@@ -207,6 +222,7 @@ impl Sidecar {
     }
 
     fn stop_process(&self) {
+        self.core.audio.stop();
         // Invalidate the reader before closing stdout so an intentional restart
         // is not reported as an unexpected crash.
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -257,22 +273,29 @@ impl Sidecar {
             self.core.commands.send(command)?;
             return Ok(id);
         }
-        if method == "clear_cache" && matches!(body["kind"].as_str(), Some("all" | "messages")) {
-            self.core.commands.send(CoreCommand::Clear {
-                id: if body["kind"] == "all" { 0 } else { id },
-                generation,
-            })?;
-            if body["kind"] == "messages" {
-                return Ok(id);
-            }
-        }
         if matches!(
             method,
-            "send_message" | "send_audio" | "send_media" | "send_sticker" | "send_postback"
+            "send_message"
+                | "send_audio"
+                | "send_media"
+                | "send_sticker"
+                | "send_postback"
+                | "list_chats"
+                | "list_friends"
+                | "list_stickers"
+                | "mark_read"
+                | "unsend_message"
+                | "mute_chat"
+                | "add_friend"
+                | "clear_cache"
         ) {
-            self.core
-                .commands
-                .send(CoreCommand::Invalidate { chat, generation })?;
+            self.core.commands.send(CoreCommand::Operation {
+                id,
+                method: method.into(),
+                params: body,
+                generation,
+            })?;
+            return Ok(id);
         }
         let req = Request {
             id,
