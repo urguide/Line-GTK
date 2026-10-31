@@ -224,7 +224,8 @@ export function createApi(getClient: () => Client | null, transfer: string) {
         );
         return { objId: uploaded.objId, objHash: uploaded.objHash };
       }
-      case "bridge_send_media": {
+      case "bridge_send_media":
+      case "bridge_send_media_e2ee_fallback": {
         const bytes = await Deno.readFile(transferPath(p.transferName));
         const data = new Blob([bytes], {
           type: String(p.mime || "application/octet-stream"),
@@ -240,6 +241,20 @@ export function createApi(getClient: () => Client | null, transfer: string) {
           !String(p.chatMid).startsWith("c")
         ) {
           throw new Error("e2ee_media_mid_unsupported");
+        }
+        if (!["image", "gif", "video", "audio", "file"].includes(type)) {
+          throw new Error("invalid_media_type");
+        }
+        if (method === "bridge_send_media_e2ee_fallback") {
+          const raw = await c.base.obs.uploadMediaByE2EE({
+            to: String(p.chatMid),
+            oType: type as "image" | "gif" | "video" | "audio" | "file",
+            data,
+            filename: String(p.fileName),
+            preview,
+            durationMs: p.durationMs as number | undefined,
+          });
+          return { rawMessage: packRaw(raw) };
         }
         const types: Record<string, [string, number]> = {
           image: ["emi", 1],

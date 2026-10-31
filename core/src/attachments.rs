@@ -32,6 +32,37 @@ pub fn upload_method(chat: &str) -> Result<&'static str> {
         "bridge_upload_plain_media"
     })
 }
+
+/// Retry only through the library's E2EE implementation. A transport timeout
+/// has an unknown server outcome, so do not risk resending in that case.
+pub fn upload(
+    params: &Value,
+    mut call: impl FnMut(&str, Value) -> Result<Value>,
+    mut before_retry: impl FnMut() -> Result<()>,
+) -> Result<Value> {
+    let method = upload_method(params["chatMid"].as_str().unwrap_or_default())?;
+    match call(method, params.clone()) {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            let reason = error.to_string();
+            if method != "bridge_send_media"
+                || matches!(
+                    reason.as_str(),
+                    "session_changed"
+                        | "protocol timeout"
+                        | "protocol disconnected"
+                        | "protocol unavailable"
+                        | "bridge_busy"
+                        | "not_logged_in"
+                )
+            {
+                return Err(error);
+            }
+            before_retry()?;
+            call("bridge_send_media_e2ee_fallback", params.clone())
+        }
+    }
+}
 pub fn mime(extension: &str, kind: &str) -> &'static str {
     match extension {
         "png" => "image/png",

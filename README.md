@@ -51,6 +51,10 @@ takes precedence, otherwise Rust uses ffprobe when available. Missing tools,
 nonzero exits, invalid/nonfinite/nonpositive output fall back to the legacy
 1919 ms value rather than preventing upload. This fallback is not a measurement
 of the actual clip length.
+E2EE attachment failures can retry once through linejs `uploadMediaByE2EE`,
+selected and paced by Rust with the same staged original, preview and duration.
+User/group uploads never fall back to plaintext. Session cancellation or an IPC
+timeout/disconnection does not resend an upload whose server outcome is unknown.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

@@ -501,6 +501,7 @@ mod tests {
             let waiting = replies.clone();
             let responder = std::thread::spawn(move || {
                 let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let mut responses = 0;
                 loop {
                     let waiter = {
                         let mut map = waiting.lock().unwrap();
@@ -519,7 +520,10 @@ mod tests {
                             extra: Value::Null,
                         })
                         .unwrap();
-                        break;
+                        responses += 1;
+                        if !fail || responses == 2 {
+                            break;
+                        }
                     }
                     assert!(
                         std::time::Instant::now() < deadline,
@@ -565,7 +569,7 @@ mod tests {
             assert_eq!(
                 stages,
                 if fail {
-                    vec![0.05, 0.10, 0.35]
+                    vec![0.05, 0.10, 0.35, 0.40]
                 } else {
                     vec![0.05, 0.10, 0.35, 0.90]
                 }
@@ -582,6 +586,171 @@ mod tests {
                     b"attachment content"
                 );
             }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn encrypted_upload_fallback_preserves_original_and_one_terminal_progress() {
+        for both_fail in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "line-e2ee-fallback-{}-{both_fail}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let source = root.join("original.txt");
+            std::fs::write(&source, b"encrypted attachment").unwrap();
+            let mut child = Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let replies: Replies = Arc::default();
+            let waiting = replies.clone();
+            let transfer = root.join("cache/transfer");
+            let responder = std::thread::spawn(move || {
+                let mut reader = BufReader::new(stdout);
+                let mut original = Value::Null;
+                for (attempt, method) in ["bridge_send_media", "bridge_send_media_e2ee_fallback"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    assert_eq!(request["method"], method);
+                    let p = request["params"].clone();
+                    assert_eq!(
+                        std::fs::read(transfer.join(p["transferName"].as_str().unwrap())).unwrap(),
+                        b"encrypted attachment"
+                    );
+                    if attempt == 0 {
+                        original = p;
+                    } else {
+                        assert_eq!(p, original);
+                    }
+                    let id = request["id"].as_u64().unwrap();
+                    let success = attempt == 1 && !both_fail;
+                    waiting
+                        .lock()
+                        .unwrap()
+                        .remove(&id)
+                        .unwrap()
+                        .send(Response {
+                            id: Some(id),
+                            ok: Some(success),
+                            result: Some(json!({"rawMessage":{"id":"123","contentMetadata":{}}})),
+                            error: (!success).then(|| format!("encrypted path {attempt} failed")),
+                            event: None,
+                            extra: Value::Null,
+                        })
+                        .unwrap();
+                }
+            });
+            let (events, rx) = async_channel::unbounded();
+            let generation = Arc::new(AtomicU64::new(1));
+            let db = root.join("cache.sqlite3");
+            let ipc = Ipc {
+                stdin: Arc::new(Mutex::new(child.stdin.take())),
+                replies,
+                ids: Arc::new(AtomicU64::new(1)),
+                generation: generation.clone(),
+                events,
+                data: root.clone(),
+                asset_at: Mutex::new(None),
+            };
+            let engine = Engine::new(
+                Store::open(&db).unwrap(),
+                ipc,
+                generation.clone(),
+                root.join("legacy"),
+            );
+            let (tx, commands) = mpsc::channel();
+            let worker = std::thread::spawn(move || engine.run(commands));
+            tx.send(CoreCommand::Session {
+                account: "me".into(),
+                generation: 1,
+            })
+            .unwrap();
+            tx.send(CoreCommand::Operation {
+                id: 42,
+                method: "send_media".into(),
+                params: json!({"chatMid":"u1","filePath":source,"oType":"file"}),
+                generation: 1,
+            })
+            .unwrap();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let mut terminal = 0;
+                let mut retries = 0;
+                loop {
+                    let event = loop {
+                        if let Ok(event) = rx.try_recv() {
+                            break event;
+                        }
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "upload did not finish"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    };
+                    match event {
+                        ProtocolEvent::UploadProgress {
+                            done: true,
+                            progress,
+                            ..
+                        } => {
+                            terminal += 1;
+                            assert_eq!(progress, if both_fail { 0.0 } else { 1.0 });
+                        }
+                        ProtocolEvent::UploadProgress {
+                            done: false,
+                            progress: 0.4,
+                            ..
+                        } => retries += 1,
+                        ProtocolEvent::Response {
+                            id: 42, ok, error, ..
+                        } => {
+                            assert_eq!(ok, !both_fail);
+                            assert_eq!(terminal, 1);
+                            assert_eq!(retries, 1);
+                            if both_fail {
+                                assert_eq!(error.as_deref(), Some("encrypted path 1 failed"));
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                responder.join().unwrap();
+            }));
+            tx.send(CoreCommand::Stop).unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+            if outcome.is_err() {
+                generation.fetch_add(1, Ordering::SeqCst);
+            }
+            worker.join().unwrap();
+            if let Err(e) = outcome {
+                std::panic::resume_unwind(e);
+            }
+            assert_eq!(std::fs::read(&source).unwrap(), b"encrypted attachment");
+            assert_eq!(
+                std::fs::read_dir(root.join("cache/transfer"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+            let cached = root.join("cache/media/123.txt");
+            assert_eq!(cached.is_file(), !both_fail);
+            if !both_fail {
+                assert_eq!(std::fs::read(cached).unwrap(), b"encrypted attachment");
+            }
+            let mut store = Store::open(&db).unwrap();
+            store.set_account("me");
+            assert_eq!(store.message("u1", "123").unwrap().is_some(), !both_fail);
+            drop(store);
             std::fs::remove_dir_all(root).unwrap();
         }
     }

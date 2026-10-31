@@ -5,6 +5,91 @@ import { packRaw, unpackRaw } from "../src/raw_codec.ts";
 import { coerceI64 } from "../src/messages.ts";
 import { unsendFromOperation } from "../src/events.ts";
 
+Deno.test("library E2EE RPC forwards original preview duration and errors without plaintext fallback", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    await Deno.writeFile(
+      `${directory}/original.mp4`,
+      new Uint8Array([1, 2, 3]),
+    );
+    await Deno.writeFile(`${directory}/preview.jpg`, new Uint8Array([4, 5]));
+    let calls = 0;
+    let reject = false;
+    const client = {
+      base: {
+        obs: {
+          uploadMediaByE2EE: async (
+            options: {
+              to: string;
+              oType: string;
+              data: Blob;
+              preview?: Blob;
+              filename: string;
+              durationMs: number;
+            },
+          ) => {
+            calls++;
+            assertEquals(options.to, "c-group");
+            assertEquals(options.oType, "video");
+            assertEquals(options.filename, "影片.mp4");
+            assertEquals(options.durationMs, 3200);
+            assertEquals(
+              [...new Uint8Array(await options.data.arrayBuffer())],
+              [1, 2, 3],
+            );
+            assertEquals([
+              ...new Uint8Array(await options.preview!.arrayBuffer()),
+            ], [4, 5]);
+            if (reject) {
+              throw new Error("encrypted fallback rejected");
+            }
+            return { id: "9007199254740993" };
+          },
+          uploadObjTalk: () => {
+            throw new Error("must not use plaintext");
+          },
+        },
+      },
+    } as unknown as Client;
+    const api = createApi(() => client, directory);
+    const p = {
+      chatMid: "c-group",
+      oType: "video",
+      transferName: "original.mp4",
+      previewName: "preview.jpg",
+      fileName: "影片.mp4",
+      durationMs: 3200,
+    };
+    assertEquals(await api("bridge_send_media_e2ee_fallback", p), {
+      rawMessage: { id: "9007199254740993" },
+    });
+    reject = true;
+    await assertRejects(
+      () => api("bridge_send_media_e2ee_fallback", p),
+      Error,
+      "encrypted fallback rejected",
+    );
+    assertEquals(calls, 2);
+    await assertRejects(
+      () => api("bridge_send_media_e2ee_fallback", { ...p, chatMid: "r-room" }),
+      Error,
+      "e2ee_media_mid_unsupported",
+    );
+    assertEquals(calls, 2);
+    await assertRejects(
+      () =>
+        api("bridge_send_media_e2ee_fallback", {
+          ...p,
+          transferName: "../secret",
+        }),
+      Error,
+      "invalid_transfer_name",
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
 Deno.test("plain OBS attachment RPC preserves destination, GIF, filename and duration without duplicate sends", async () => {
   const directory = await Deno.makeTempDir();
   try {

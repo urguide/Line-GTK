@@ -292,7 +292,20 @@ impl Ipc {
                 p["durationMs"].as_i64()
             };
             progress(0.35, "Uploading…")?;
-            let mut result=self.call(method,json!({"chatMid":p["chatMid"],"transferName":name,"previewName":if preview_ready{Some(&preview_name)}else{None},"fileName":filename,"extension":ext,"mime":line_gtk_core::attachments::mime(&ext,kind),"oType":kind,"durationMs":duration}),generation)?;
+            let upload_params = json!({"chatMid":p["chatMid"],"transferName":name,"previewName":if preview_ready{Some(&preview_name)}else{None},"fileName":filename,"extension":ext,"mime":line_gtk_core::attachments::mime(&ext,kind),"oType":kind,"durationMs":duration});
+            let mut result = line_gtk_core::attachments::upload(
+                &upload_params,
+                |rpc, params| self.call(rpc, params, generation),
+                || {
+                    progress(0.40, "Retrying encrypted upload…")?;
+                    // Keep retry pacing and cancellation in the Rust host.
+                    for _ in 0..10 {
+                        self.active(generation)?;
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    self.active(generation)
+                },
+            )?;
             progress(0.90, "Saving attachment…")?;
             if method == "bridge_upload_plain_media" {
                 let object_id = result["objId"]
