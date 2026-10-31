@@ -42,6 +42,10 @@ Attachment progress is emitted by Rust at preparation, upload and local-save
 stages. Every upload operation emits one terminal success/failure event before
 its response, including early validation failures, so the UI can close progress.
 These are stage indicators rather than measured byte-transfer percentages.
+Upload previews are optional: missing ffmpeg, a failed conversion, or empty output
+discards the preview and still uploads and stores the original attachment. The
+upload RPC receives no preview path in that case; terminal progress still reports
+the outcome of sending and persisting the original.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

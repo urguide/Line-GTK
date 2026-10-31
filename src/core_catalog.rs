@@ -163,6 +163,17 @@ impl Ipc {
         Ok(result)
     }
     fn send_attachment(&self, p: &Value, generation: u64) -> Result<Value> {
+        self.send_attachment_with_preview(p, generation, |source, destination| {
+            self.thumb(source, destination)
+        })
+    }
+
+    pub(crate) fn send_attachment_with_preview(
+        &self,
+        p: &Value,
+        generation: u64,
+        make_preview: impl FnOnce(&Path, &Path) -> Result<()>,
+    ) -> Result<Value> {
         let chat = p["chatMid"].as_str().unwrap_or_default();
         let progress = |fraction, label| -> Result<()> {
             self.active(generation)?;
@@ -207,9 +218,30 @@ impl Ipc {
         let preview = dir.join(&preview_name);
         let result = (|| {
             progress(0.10, "Preparing preview…")?;
-            if matches!(kind, "image" | "gif" | "video") {
-                self.thumb(&staged, &preview)?;
-            }
+            let preview_ready = if matches!(kind, "image" | "gif" | "video") {
+                match make_preview(&staged, &preview).and_then(|()| {
+                    if !preview.metadata()?.is_file() || preview.metadata()?.len() == 0 {
+                        bail!("empty or invalid upload preview");
+                    }
+                    Ok(())
+                }) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::warn!(
+                            "upload preview unavailable; continuing with original: {error}"
+                        );
+                        // Never pass a partial output to linejs, even if cleanup fails.
+                        if let Err(cleanup) = std::fs::remove_file(&preview)
+                            && cleanup.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::warn!("upload preview cleanup: {cleanup}");
+                        }
+                        false
+                    }
+                }
+            } else {
+                false
+            };
             let mut duration = p["durationMs"].as_i64();
             if duration.is_none() && matches!(kind, "audio" | "video") {
                 let output = Command::new("ffprobe")
@@ -230,7 +262,7 @@ impl Ipc {
                     .map(|s| (s * 1000.0) as i64);
             }
             progress(0.35, "Uploading…")?;
-            let mut result=self.call(method,json!({"chatMid":p["chatMid"],"transferName":name,"previewName":if preview.is_file(){Some(&preview_name)}else{None},"fileName":filename,"extension":ext,"mime":line_gtk_core::attachments::mime(&ext,kind),"oType":kind,"durationMs":duration}),generation)?;
+            let mut result=self.call(method,json!({"chatMid":p["chatMid"],"transferName":name,"previewName":if preview_ready{Some(&preview_name)}else{None},"fileName":filename,"extension":ext,"mime":line_gtk_core::attachments::mime(&ext,kind),"oType":kind,"durationMs":duration}),generation)?;
             progress(0.90, "Saving attachment…")?;
             if method == "bridge_upload_plain_media" {
                 let object_id = result["objId"]
@@ -254,7 +286,7 @@ impl Ipc {
             std::fs::rename(&staged, &dest)?;
             result["filePath"] = json!(dest);
             result["fileName"] = json!(filename);
-            if preview.is_file() {
+            if preview_ready {
                 let thumb = self
                     .data
                     .join("cache/media")
