@@ -122,46 +122,45 @@ impl Ipc {
         Ok(result)
     }
     fn sticker_catalog(&self, p: &Value, generation: u64) -> Result<Value> {
-        let owned = self.call("bridge_owned_stickers", json!({}), generation)?;
-        let products = owned["productList"]
-            .as_array()
-            .or_else(|| owned["1"].as_array())
-            .cloned()
-            .unwrap_or_default();
-        let mut packs = Vec::new();
-        let mut recent = Vec::new();
-        for row in p["recent"].as_array().into_iter().flatten().take(24) {
-            let package = string(&row["packageId"]);
-            if !products.iter().any(|v| string(&v["id"]) == package) {
-                continue;
-            }
-            let mut row = row.clone();
-            row["imagePath"] = json!(
-                self.sticker(&string(&row["stickerId"]), false, generation)
-                    .ok()
-            );
-            recent.push(row);
-        }
-        if !recent.is_empty() {
-            packs.push(json!({"id":"__recent__","name":"Recent","recent":true,"iconPath":recent[0]["imagePath"],"stickers":recent}));
-        }
-        for product in products.iter().take(12) {
-            let package = string(&product["id"]);
-            numeric(&package)?;
-            let meta_path = self
-                .data
-                .join("cache/stickers")
-                .join(format!("pack-{package}.json"));
-            let path=self.asset(&format!("https://stickershop.line-scdn.net/stickershop/v1/product/{package}/android/productInfo.meta"),&meta_path,generation)?;
-            let meta: Value = serde_json::from_slice(&std::fs::read(path)?)?;
-            let mut stickers = Vec::new();
-            for sticker in meta["stickers"].as_array().into_iter().flatten().take(48) {
-                let id = string(&sticker["id"]);
-                stickers.push(json!({"stickerId":id,"packageId":package,"version":string(&meta["version"]),"imagePath":self.sticker(&id,false,generation).ok()}));
-            }
-            packs.push(json!({"id":package,"name":meta["title"]["en"].as_str().or_else(||product["name"].as_str()).unwrap_or(&package),"version":string(&meta["version"]),"iconPath":stickers.first().map(|s|&s["imagePath"]),"recent":false,"stickers":stickers}));
-        }
-        Ok(json!({"packs":packs,"ownedPackages":products.len()}))
+        let owned = self.call("bridge_owned_stickers", json!({}), generation);
+        self.active(generation)?;
+        let result = line_gtk_core::stickers::load(
+            owned,
+            &p["previous"],
+            &p["recent"],
+            |package| {
+                self.active(generation)?;
+                let path = self
+                    .data
+                    .join("cache/stickers")
+                    .join(format!("pack-{package}.json"));
+                // A damaged local file must not permanently poison future refreshes.
+                if path.is_file()
+                    && std::fs::read(&path)
+                        .ok()
+                        .and_then(|b| line_gtk_core::stickers::metadata(&b).ok())
+                        .is_none()
+                {
+                    std::fs::remove_file(&path)?;
+                }
+                let downloaded=self.asset(&format!("https://stickershop.line-scdn.net/stickershop/v1/product/{package}/android/productInfo.meta"),&path,generation)?;
+                let bytes = std::fs::read(downloaded)?;
+                if let Err(error) = line_gtk_core::stickers::metadata(&bytes) {
+                    let _ = std::fs::remove_file(&path);
+                    return Err(error);
+                }
+                Ok(bytes)
+            },
+            |id| {
+                self.active(generation)?;
+                Ok(self
+                    .sticker(id, false, generation)?
+                    .to_string_lossy()
+                    .into_owned())
+            },
+        )?;
+        self.active(generation)?;
+        Ok(result)
     }
     fn send_attachment(&self, p: &Value, generation: u64) -> Result<Value> {
         let method =

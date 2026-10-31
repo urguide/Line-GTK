@@ -34,6 +34,10 @@ group APIs: Rust tries user profiles and unresolved contacts sequentially and
 retains this account's cached rows and avatars. Partial results do not suppress
 the next refresh. Rust also preserves the legacy postback-to-text fallback;
 successful postbacks never send an extra message.
+Sticker package failures are isolated: a failed download or damaged metadata
+uses that account's previously rendered pack when available, otherwise skips
+only that pack. Recents and healthy packs still render; partial results retry
+on the next open, and corrupt metadata files are discarded for a clean refetch.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

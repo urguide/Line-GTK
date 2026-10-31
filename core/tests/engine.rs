@@ -178,3 +178,91 @@ fn forced_catalog_refresh_receives_stale_cache_and_postback_fallback_is_persiste
     drop(store);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn sticker_refresh_keeps_cached_pack_and_partial_result_retries_without_force() {
+    struct Stickers {
+        events: mpsc::Sender<Value>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Transport for Stickers {
+        fn call(&self, _: &str, _: Value, _: u64) -> Result<Value> {
+            unreachable!()
+        }
+        fn materialize(&self, row: &Value, _: u64) -> Result<Value> {
+            Ok(row.clone())
+        }
+        fn emit(&self, event: Value) {
+            self.events.send(event).unwrap();
+        }
+        fn application(&self, method: &str, p: Value, _: u64) -> Result<Value> {
+            assert_eq!(method, "list_stickers");
+            assert_eq!(
+                p["previous"]["packs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|v| v["id"] == "1")
+                    .unwrap()["name"],
+                "Saved"
+            );
+            let attempt = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            line_gtk_core::stickers::load(
+                Ok(json!({"productList":[{"id":"1"},{"id":"2"}]})),
+                &p["previous"],
+                &p["recent"],
+                |id| {
+                    if attempt == 0 && id == "1" {
+                        anyhow::bail!("metadata download failed");
+                    }
+                    Ok(json!({"title":"Recovered","version":1,"stickers":[{"id":format!("{id}0")}]}).to_string().into_bytes())
+                },
+                |id| Ok(format!("/cache/{id}.png")),
+            )
+        }
+    }
+    let mut store = Store::open(Path::new(":memory:")).unwrap();
+    store.set_account("account");
+    store.save_catalog("list_stickers",&json!({"packs":[{"id":"1","name":"Saved","version":"1","stickers":[{"packageId":"1","stickerId":"10"}]}]})).unwrap();
+    store
+        .save_catalog(
+            "recent_stickers",
+            &json!([{"packageId":"1","stickerId":"10"}]),
+        )
+        .unwrap();
+    store.invalidate_catalogs().unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (events, rx) = mpsc::channel();
+    let (tx, commands) = mpsc::channel();
+    let engine = Engine::new(
+        store,
+        Stickers {
+            events,
+            calls: calls.clone(),
+        },
+        Arc::new(AtomicU64::new(1)),
+        PathBuf::from("/nonexistent/legacy"),
+    );
+    let worker = std::thread::spawn(move || engine.run(commands));
+    tx.send(Command::Session {
+        account: "account".into(),
+        generation: 1,
+    })
+    .unwrap();
+    for id in 1..=3 {
+        tx.send(Command::Operation {
+            id,
+            method: "list_stickers".into(),
+            params: json!({}),
+            generation: 1,
+        })
+        .unwrap();
+        let response = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["result"]["packs"].as_array().unwrap().len(), 3);
+        assert_eq!(response["result"]["partial"], id == 1);
+    }
+    tx.send(Command::Stop).unwrap();
+    worker.join().unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}

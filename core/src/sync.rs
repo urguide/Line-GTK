@@ -273,6 +273,10 @@ impl<T: Transport> Engine<T> {
                         });
                     }
                     if method == "list_stickers" {
+                        params["previous"] = self
+                            .store
+                            .catalog("list_stickers", i64::MAX)?
+                            .unwrap_or_default();
                         params["recent"] = self
                             .store
                             .catalog("recent_stickers", i64::MAX)?
