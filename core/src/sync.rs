@@ -247,6 +247,16 @@ impl<T: Transport> Engine<T> {
                 mut params,
                 generation,
             } => {
+                let upload = matches!(method.as_str(), "send_media" | "send_audio");
+                let upload_chat = params["chatMid"].as_str().unwrap_or_default().to_owned();
+                if upload && self.generation.load(Ordering::SeqCst) == generation {
+                    self.transport.emit(crate::attachments::upload_progress(
+                        &upload_chat,
+                        0.02,
+                        "Preparing…",
+                        false,
+                    ));
+                }
                 let result = (|| {
                     self.valid(generation)?;
                     if method == "invalidate_catalogs" {
@@ -351,6 +361,16 @@ impl<T: Transport> Engine<T> {
                     }
                     Ok(value)
                 })();
+                // Finish only after the whole operation, including SQLite persistence.
+                // All early errors take this path, even if no upload RPC was started.
+                if upload && self.generation.load(Ordering::SeqCst) == generation {
+                    self.transport.emit(crate::attachments::upload_progress(
+                        &upload_chat,
+                        if result.is_ok() { 1.0 } else { 0.0 },
+                        if result.is_ok() { "Sent" } else { "" },
+                        true,
+                    ));
+                }
                 self.response(id, result, generation);
             }
             Command::Stop => return Ok(false),

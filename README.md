@@ -38,6 +38,10 @@ Sticker package failures are isolated: a failed download or damaged metadata
 uses that account's previously rendered pack when available, otherwise skips
 only that pack. Recents and healthy packs still render; partial results retry
 on the next open, and corrupt metadata files are discarded for a clean refetch.
+Attachment progress is emitted by Rust at preparation, upload and local-save
+stages. Every upload operation emits one terminal success/failure event before
+its response, including early validation failures, so the UI can close progress.
+These are stage indicators rather than measured byte-transfer percentages.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

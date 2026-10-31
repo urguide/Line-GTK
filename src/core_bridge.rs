@@ -403,6 +403,12 @@ impl Transport for Ipc {
             let chat_mid = event["chatMid"].as_str().unwrap_or_default().to_owned();
             let message_id = event["messageId"].as_str().unwrap_or_default().to_owned();
             match event["event"].as_str() {
+                Some("upload_progress") => Some(ProtocolEvent::UploadProgress {
+                    chat_mid,
+                    progress: event["progress"].as_f64().unwrap_or(0.0),
+                    label: event["label"].as_str().unwrap_or_default().to_owned(),
+                    done: event["done"].as_bool().unwrap_or(false),
+                }),
                 Some("message") => serde_json::from_value(event["message"].clone())
                     .ok()
                     .map(ProtocolEvent::Message),
@@ -426,6 +432,152 @@ impl Transport for Ipc {
         };
         if let Some(ev) = ev {
             let _ = self.events.send_blocking(ev);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rust_upload_events_reach_the_existing_ui_protocol_variant() {
+        let (events, rx) = async_channel::unbounded();
+        let ipc = Ipc {
+            stdin: Arc::new(Mutex::new(None)),
+            replies: Arc::default(),
+            ids: Arc::new(AtomicU64::new(1)),
+            generation: Arc::new(AtomicU64::new(1)),
+            events,
+            data: PathBuf::new(),
+            asset_at: Mutex::new(None),
+        };
+        for (progress, label, done) in [
+            (0.35, "Uploading…", false),
+            (1.0, "Sent", true),
+            (0.0, "", true),
+        ] {
+            ipc.emit(line_gtk_core::attachments::upload_progress(
+                "c-group", progress, label, done,
+            ));
+            match rx.try_recv().unwrap() {
+                ProtocolEvent::UploadProgress {
+                    chat_mid,
+                    progress: p,
+                    label: l,
+                    done: d,
+                } => {
+                    assert_eq!(chat_mid, "c-group");
+                    assert_eq!(p, progress);
+                    assert_eq!(l, label);
+                    assert_eq!(d, done);
+                }
+                other => panic!("wrong UI event: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn real_attachment_pipeline_reports_stages_and_cleans_staging_on_rpc_failure() {
+        for fail in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "line-upload-progress-{}-{fail}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let source = root.join("document.txt");
+            std::fs::write(&source, b"attachment content").unwrap();
+            let (events, rx) = async_channel::unbounded();
+            let mut child = Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            let replies: Replies = Arc::default();
+            let waiting = replies.clone();
+            let responder = std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    let waiter = {
+                        let mut map = waiting.lock().unwrap();
+                        map.keys()
+                            .next()
+                            .copied()
+                            .and_then(|id| map.remove(&id).map(|tx| (id, tx)))
+                    };
+                    if let Some((id, tx)) = waiter {
+                        tx.send(Response {
+                            id: Some(id),
+                            ok: Some(!fail),
+                            result: Some(json!({"rawMessage":{"id":"123","contentMetadata":{}}})),
+                            error: fail.then(|| "upload rejected".into()),
+                            event: None,
+                            extra: Value::Null,
+                        })
+                        .unwrap();
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "attachment never reached upload RPC"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            });
+            let ipc = Ipc {
+                stdin: Arc::new(Mutex::new(child.stdin.take())),
+                replies,
+                ids: Arc::new(AtomicU64::new(1)),
+                generation: Arc::new(AtomicU64::new(1)),
+                events,
+                data: root.clone(),
+                asset_at: Mutex::new(None),
+            };
+            let result = ipc.application(
+                "send_media",
+                json!({"chatMid":"u1","account":"me","filePath":source,"oType":"file"}),
+                1,
+            );
+            responder.join().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+            assert_eq!(result.is_err(), fail);
+            let mut stages = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                if let ProtocolEvent::UploadProgress {
+                    chat_mid,
+                    progress,
+                    done,
+                    ..
+                } = event
+                {
+                    assert_eq!(chat_mid, "u1");
+                    assert!(!done);
+                    stages.push(progress);
+                } else {
+                    panic!("unexpected event");
+                }
+            }
+            assert_eq!(
+                stages,
+                if fail {
+                    vec![0.05, 0.10, 0.35]
+                } else {
+                    vec![0.05, 0.10, 0.35, 0.90]
+                }
+            );
+            assert_eq!(
+                std::fs::read_dir(root.join("cache/transfer"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+            if !fail {
+                assert_eq!(
+                    std::fs::read(root.join("cache/media/123.txt")).unwrap(),
+                    b"attachment content"
+                );
+            }
+            std::fs::remove_dir_all(root).unwrap();
         }
     }
 }

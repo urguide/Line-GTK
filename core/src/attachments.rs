@@ -1,5 +1,11 @@
 //! Choose the upload protocol in Rust; the adapter only executes that choice.
 use anyhow::{Result, bail};
+use serde_json::{Value, json};
+
+/// Stage-based progress, not a fabricated byte-transfer percentage.
+pub fn upload_progress(chat: &str, progress: f64, label: &str, done: bool) -> Value {
+    json!({"event":"upload_progress","chatMid":chat,"progress":progress,"label":label,"done":done})
+}
 
 pub fn upload_method(chat: &str) -> Result<&'static str> {
     if chat.is_empty() {

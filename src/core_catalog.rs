@@ -163,6 +163,14 @@ impl Ipc {
         Ok(result)
     }
     fn send_attachment(&self, p: &Value, generation: u64) -> Result<Value> {
+        let chat = p["chatMid"].as_str().unwrap_or_default();
+        let progress = |fraction, label| -> Result<()> {
+            self.active(generation)?;
+            self.emit(line_gtk_core::attachments::upload_progress(
+                chat, fraction, label, false,
+            ));
+            Ok(())
+        };
         let method =
             line_gtk_core::attachments::upload_method(p["chatMid"].as_str().unwrap_or_default())?;
         let source = Path::new(p["filePath"].as_str().context("missing attachment")?);
@@ -193,10 +201,12 @@ impl Ipc {
         let token = self.ids.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let name = format!("upload-{token}.{ext}");
         let staged = dir.join(&name);
+        progress(0.05, "Reading file…")?;
         std::fs::copy(source, &staged)?;
         let preview_name = format!("preview-{token}.jpg");
         let preview = dir.join(&preview_name);
         let result = (|| {
+            progress(0.10, "Preparing preview…")?;
             if matches!(kind, "image" | "gif" | "video") {
                 self.thumb(&staged, &preview)?;
             }
@@ -219,7 +229,9 @@ impl Ipc {
                     .ok()
                     .map(|s| (s * 1000.0) as i64);
             }
+            progress(0.35, "Uploading…")?;
             let mut result=self.call(method,json!({"chatMid":p["chatMid"],"transferName":name,"previewName":if preview.is_file(){Some(&preview_name)}else{None},"fileName":filename,"extension":ext,"mime":line_gtk_core::attachments::mime(&ext,kind),"oType":kind,"durationMs":duration}),generation)?;
+            progress(0.90, "Saving attachment…")?;
             if method == "bridge_upload_plain_media" {
                 let object_id = result["objId"]
                     .as_str()
