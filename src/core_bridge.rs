@@ -195,7 +195,17 @@ impl Ipc {
         if !path.starts_with(self.data.join("cache").canonicalize()?) {
             bail!("media path outside cache");
         }
+        let metadata = path.metadata()?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            bail!("cached media is not a nonempty regular file");
+        }
         Ok(path)
+    }
+
+    fn cached_media_file(&self, path: &Path) -> Option<PathBuf> {
+        let path = self.safe_cache_file(path).ok()?;
+        path.starts_with(self.data.join("cache/media").canonicalize().ok()?)
+            .then_some(path)
     }
 
     pub(crate) fn thumb(&self, file: &Path, dest: &Path) -> Result<()> {
@@ -295,11 +305,13 @@ impl Transport for Ipc {
         let mut file = row["filePath"]
             .as_str()
             .map(PathBuf::from)
-            .and_then(|p| self.safe_cache_file(&p).ok());
+            .and_then(|p| self.cached_media_file(&p));
         if kind == "VIDEO"
-            && file
-                .as_ref()
-                .is_some_and(|p| p.extension().and_then(|s| s.to_str()) != Some("mp4"))
+            && file.as_ref().is_some_and(|p| {
+                !p.extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(line_gtk_core::attachments::video_extension)
+            })
         {
             file = None;
         }
@@ -307,6 +319,10 @@ impl Transport for Ipc {
             // Recover binaries downloaded before the SQLite migration.
             for ext in [
                 "mp4",
+                "webm",
+                "mov",
+                "mkv",
+                "m4v",
                 "full.jpg",
                 "full.png",
                 "full.webp",
@@ -317,12 +333,12 @@ impl Transport for Ipc {
                 "bin",
             ] {
                 let candidate = dir.join(format!("{id}.{ext}"));
-                if (kind == "VIDEO" && ext != "mp4")
+                if (kind == "VIDEO" && !line_gtk_core::attachments::video_extension(ext))
                     || (kind == "IMAGE" && !ext.starts_with("full."))
                 {
                     continue;
                 }
-                if candidate.is_file() {
+                if let Some(candidate) = self.cached_media_file(&candidate) {
                     file = Some(candidate);
                     break;
                 }
@@ -383,10 +399,17 @@ impl Transport for Ipc {
             }
             "IMAGE" | "VIDEO" => {
                 let thumb = dir.join(format!("{id}.thumb.jpg"));
-                if !thumb.is_file() {
+                if self.cached_media_file(&thumb).is_none() {
+                    // Do not let ffmpeg follow an invalid/escaping thumbnail link.
+                    if std::fs::symlink_metadata(&thumb).is_ok() {
+                        std::fs::remove_file(&thumb)?;
+                    }
                     self.thumb(&file, &thumb)?;
                 }
-                updated["imagePath"] = json!(thumb);
+                updated["imagePath"] = json!(
+                    self.cached_media_file(&thumb)
+                        .context("invalid cached thumbnail")?
+                );
             }
             "STICKER" => updated["imagePath"] = json!(file),
             "AUDIO" => updated["audioPath"] = json!(file),
@@ -451,6 +474,10 @@ mod tests {
             ("photo.BMP", "auto", "image", "image/bmp"),
             ("photo.HEIC", "auto", "image", "image/jpeg"),
             ("clip.M4V", "auto", "video", "video/mp4"),
+            ("clip.WebM", "auto", "video", "video/webm"),
+            ("clip.MOV", "auto", "video", "video/quicktime"),
+            ("clip.MKV", "auto", "video", "video/x-matroska"),
+            ("clip.MP4", "auto", "video", "video/mp4"),
             ("voice.AAC", "auto", "audio", "audio/mp4"),
             ("voice.OGA", "auto", "audio", "audio/ogg"),
             ("voice.FLAC", "auto", "audio", "audio/mp4"),
@@ -537,8 +564,145 @@ mod tests {
                 b"unchanged original"
             );
             assert_eq!(std::fs::read(source).unwrap(), b"unchanged original");
+            if kind == "video" && filename != "blob.bin" {
+                let mut row = result["rawMessage"].clone();
+                row["filePath"] = result["filePath"].clone();
+                row["imagePath"] = result["imagePath"].clone();
+                // Any attempted RPC now fails immediately: cached reloads must
+                // succeed without the upload process or network being available.
+                *ipc.stdin.lock().unwrap() = None;
+                let ids_before = ipc.ids.load(Ordering::SeqCst);
+                for with_path in [true, false] {
+                    if !with_path {
+                        row["filePath"] = Value::Null;
+                    }
+                    let loaded = ipc.materialize(&row, 1).unwrap();
+                    assert_eq!(
+                        std::fs::read(loaded["filePath"].as_str().unwrap()).unwrap(),
+                        b"unchanged original"
+                    );
+                    assert_eq!(
+                        std::fs::read(loaded["imagePath"].as_str().unwrap()).unwrap(),
+                        b"preview"
+                    );
+                }
+                assert_eq!(
+                    ipc.ids.load(Ordering::SeqCst),
+                    ids_before,
+                    "cache hit must not issue RPC"
+                );
+            }
             std::fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn missing_video_downloads_once_then_reuses_original_and_thumbnail() {
+        let root = std::env::temp_dir().join(format!("line-missing-video-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("cache/media")).unwrap();
+        std::fs::create_dir_all(root.join("cache/transfer")).unwrap();
+        std::fs::write(root.join("cache/media/123.thumb.jpg"), b"thumbnail").unwrap();
+        let transferred = root.join("cache/transfer/video.part");
+        std::fs::write(&transferred, b"downloaded video").unwrap();
+        let (mut child, replies) = (
+            Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap(),
+            Replies::default(),
+        );
+        let stdout = child.stdout.take().unwrap();
+        let waiting = replies.clone();
+        let responder = std::thread::spawn(move || {
+            let mut line = String::new();
+            BufReader::new(stdout).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let id = request["id"].as_u64().unwrap();
+            waiting
+                .lock()
+                .unwrap()
+                .remove(&id)
+                .unwrap()
+                .send(Response {
+                    id: Some(id),
+                    ok: Some(true),
+                    result: Some(json!({"path":transferred,"mime":"video/mp4"})),
+                    error: None,
+                    event: None,
+                    extra: Value::Null,
+                })
+                .unwrap();
+            assert_eq!(request["method"], "bridge_download");
+        });
+        let (events, _) = async_channel::unbounded();
+        let ipc = Ipc {
+            stdin: Arc::new(Mutex::new(child.stdin.take())),
+            replies,
+            ids: Arc::new(AtomicU64::new(1)),
+            generation: Arc::new(AtomicU64::new(1)),
+            events,
+            data: root.clone(),
+            asset_at: Mutex::new(None),
+        };
+        let row =
+            json!({"id":"123","contentType":"VIDEO","filePath":root.join("cache/media/123.webm")});
+        let loaded = ipc.materialize(&row, 1);
+        let _ = child.kill();
+        let _ = child.wait();
+        responder.join().unwrap();
+        let loaded = loaded.unwrap();
+        assert_eq!(ipc.ids.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            std::fs::read(loaded["filePath"].as_str().unwrap()).unwrap(),
+            b"downloaded video"
+        );
+        *ipc.stdin.lock().unwrap() = None;
+        let again = ipc.materialize(&loaded, 1).unwrap();
+        assert_eq!(again["filePath"], loaded["filePath"]);
+        assert_eq!(ipc.ids.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            std::fs::read(again["imagePath"].as_str().unwrap()).unwrap(),
+            b"thumbnail"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unsafe_video_cache_candidates_are_not_reused() {
+        use std::os::unix::fs::symlink;
+        let root =
+            std::env::temp_dir().join(format!("line-video-cache-paths-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("cache/media")).unwrap();
+        std::fs::create_dir_all(root.join("cache/transfer")).unwrap();
+        let outside = root.join("outside.webm");
+        std::fs::write(&outside, b"private").unwrap();
+        let link = root.join("cache/media/123.webm");
+        symlink(&outside, &link).unwrap();
+        let zero = root.join("cache/media/empty.mov");
+        std::fs::write(&zero, []).unwrap();
+        let folder = root.join("cache/media/directory.mkv");
+        std::fs::create_dir(&folder).unwrap();
+        let transfer = root.join("cache/transfer/not-final.mp4");
+        std::fs::write(&transfer, b"unfinished").unwrap();
+        let (events, _) = async_channel::unbounded();
+        let ipc = Ipc {
+            stdin: Arc::new(Mutex::new(None)),
+            replies: Arc::default(),
+            ids: Arc::new(AtomicU64::new(1)),
+            generation: Arc::new(AtomicU64::new(1)),
+            events,
+            data: root.clone(),
+            asset_at: Mutex::new(None),
+        };
+        for path in [&outside, &link, &zero, &folder, &transfer] {
+            assert!(ipc.cached_media_file(path).is_none());
+        }
+        // Even the legacy filename search must reject the symlink, not merely filePath.
+        let result = ipc.materialize(&json!({"id":"123","contentType":"VIDEO"}), 1);
+        assert_eq!(result.unwrap_err().to_string(), "protocol unavailable");
+        assert_eq!(std::fs::read(&outside).unwrap(), b"private");
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn rust_upload_events_reach_the_existing_ui_protocol_variant() {

@@ -98,6 +98,10 @@ BMP/HEIC images, M4V video, AAC/OGA/FLAC audio, case-insensitive explicit types,
 and the legacy `image` + `.gif` correction to animated `gif`. Recognized explicit
 types take precedence; unknown types use filename detection. MIME metadata keeps
 the previous LINE client's mappings and defaults; this does not transcode media.
+Video cache reuse supports MP4, WebM, MOV, MKV and M4V originals, with their
+existing thumbnails. Both saved paths and legacy filename discovery validate
+nonempty regular files inside the media cache (including symlink resolution),
+so reopening a cached non-MP4 video does not request another download.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

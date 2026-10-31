@@ -3,6 +3,13 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 pub const FALLBACK_DURATION_MS: i64 = 1919;
+pub const VIDEO_EXTENSIONS: [&str; 5] = ["mp4", "webm", "mov", "mkv", "m4v"];
+
+pub fn video_extension(extension: &str) -> bool {
+    VIDEO_EXTENSIONS
+        .iter()
+        .any(|supported| extension.eq_ignore_ascii_case(supported))
+}
 
 /// Keep LINE's legacy fallback when media inspection is unavailable. Reject
 /// NaN/infinity/overflow before converting to an integer sent through JSON.
