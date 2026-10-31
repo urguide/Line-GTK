@@ -2,6 +2,7 @@ name: Release
 
 on:
   push:
+    branches: [master]
     tags: ["v*"]
   # Build and retain artifacts without publishing a release.
   workflow_dispatch:
@@ -10,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -18,28 +19,23 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
-      - name: Validate release version
+        with:
+          fetch-depth: 0
+      - name: Test automatic versioning
+        run: python3 -B -m unittest discover -s scripts/tests -v
+      - name: Prepare automatic release version
         id: version
-        env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          python3 - <<'PY'
-          import os
-          import re
-          import tomllib
-
-          with open("Cargo.toml", "rb") as source:
-              version = tomllib.load(source)["package"]["version"]
-          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
-              raise SystemExit(f"Unsupported release version: {version}")
-          if os.environ["REF_TYPE"] == "tag" and os.environ["REF_NAME"] != f"v{version}":
-              raise SystemExit(f"Tag must match Cargo.toml: expected v{version}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              print(f"version={version}", file=output)
-          PY
+        run: python3 scripts/prepare-release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-source
+          path: ${{ runner.temp }}/release-source.bundle
+          retention-days: 14
+          if-no-files-found: error
 
   build:
     name: Build Linux ${{ matrix.arch }}
@@ -58,6 +54,17 @@ jobs:
       DENO_FROZEN_LOCKFILE: "true"
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-source
+          path: ${{ runner.temp }}/release-source
+      - name: Check out exact release sources
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          git fetch "$RUNNER_TEMP/release-source/release-source.bundle" "refs/tags/$TAG"
+          git checkout --detach "$COMMIT"
       - name: Check native architecture
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
@@ -107,15 +114,27 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.event_name == 'push'
     needs: [version, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: release-*
+          name: release-source
+          path: ${{ runner.temp }}/release-source
+      - name: Import verified release commit
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          git fetch "$RUNNER_TEMP/release-source/release-source.bundle" "refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$COMMIT"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*64
           merge-multiple: true
           path: dist
       - name: Verify all assets and combine checksums
@@ -135,13 +154,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
+          # Publish only after both architectures pass. The tag points to the
+          # exact versioned source commit used by both builders.
+          git push origin "refs/tags/$TAG"
           prerelease=()
           if [[ "$TAG" == *-* ]]; then
             prerelease+=(--prerelease)
           fi
-          gh release create "$TAG" \
-            --verify-tag --title "$TAG" --generate-notes \
-            "${prerelease[@]}" \
-            ./*.tar.gz ./*.flatpak SHA256SUMS
+          if gh release view "$TAG" --json isDraft --jq .isDraft > release-draft.txt; then
+            if [[ "$(cat release-draft.txt)" != true ]]; then
+              echo "$TAG is already published; leaving its assets intact."
+              exit 0
+            fi
+          else
+            gh release create "$TAG" --draft \
+              --verify-tag --title "$TAG" --generate-notes "${prerelease[@]}"
+          fi
+          gh release upload "$TAG" --clobber ./*.tar.gz ./*.flatpak SHA256SUMS
+          gh release edit "$TAG" --draft=false "${prerelease[@]}"

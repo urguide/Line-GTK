@@ -72,11 +72,13 @@ deno task --config protocol/deno.json check
 
 ## Releases
 
-Pushing a `vVERSION` tag matching `Cargo.toml` automatically builds Linux
-x86_64 and ARM64 `.tar.gz` and `.flatpak` packages and publishes them with
-`SHA256SUMS`. **Actions → Release → Run workflow** builds downloadable artifacts
-without publishing. See [distribution notes](packaging/README.md) for setup,
-runtime requirements, and local builds.
+Pushing to `master` automatically determines the next version, builds Linux
+x86_64 and ARM64 `.tar.gz` and `.flatpak` packages, and publishes a tag and
+GitHub Release with `SHA256SUMS` after all checks pass. Breaking changes bump
+major, `feat:` commits bump minor, and other changes bump patch. No manual
+version edits, tags, or release approval PRs are needed.
+**Actions → Release → Run workflow** previews the next release as downloadable
+artifacts without publishing. See [distribution notes](packaging/README.md).
 
 ---
 

@@ -87,22 +87,42 @@ For this fork, releases are published to
 2. Open **Actions → Release → Run workflow** to test both architectures.
 3. Download `release-x86_64` and `release-aarch64` from the completed run.
 
-Manual runs only upload workflow artifacts (retained for 14 days); they do not
-publish a GitHub Release. Both architectures must pass before a tag-triggered
-run can publish.
+Manual runs prepare the next version and upload workflow artifacts (retained
+for 14 days), without publishing a tag or GitHub Release. Pushes to `master`
+publish automatically after both architectures pass.
 
 ### Publish a version
 
-1. Update the package version in `Cargo.toml` and the root package entry in
-   `Cargo.lock`. Update the Flatpak AppStream release history and release notes.
-2. Commit and push the changes.
-3. Push a new tag matching the package version exactly, such as `v0.1.3` for
-   version `0.1.3`. Tag pushes trigger automatic publishing; branch pushes do not.
+Commit and push to `master`. The workflow automatically:
 
-Tags with a prerelease suffix, such as `v0.1.3-rc.1`, create GitHub prereleases.
-Use an unused tag: the workflow creates a new release and does not overwrite an
-existing release. For a failed build, fix the cause and rerun or publish a new
-version as appropriate.
+1. Reads the highest stable `vMAJOR.MINOR.PATCH` tag and the package version.
+2. Inspects commits since the previous release: `type!:` or a
+   `BREAKING CHANGE:` / `BREAKING-CHANGE:` footer bumps major; `feat:` or
+   `feat(scope):` bumps minor; everything else bumps patch. Without a previous
+   release tag, it inspects the available history. The highest bump wins.
+3. Updates `Cargo.toml`, the root package in `Cargo.lock`, and the Flatpak
+   AppStream release history in a dedicated release commit.
+4. Builds and checks that exact commit on both native architectures.
+5. Pushes the version tag and publishes all four packages with `SHA256SUMS`.
+
+Release commits belong to the tags; the workflow does not push version-only
+commits back to `master`. Development branch versions may therefore lag behind
+releases. The tagged sources and shipped binaries have the generated version.
+This avoids branch-write requirements and recursive release builds.
+
+Version selection and publishing are serialized. When pushes arrive rapidly,
+GitHub can replace a pending run with the newest one; the later release includes
+the accumulated changes. Failed builds do not publish their version tag. Reruns
+of a tagged release source reuse the same version; a failed upload resumes its
+draft release, while an already published release is left intact. Drafts are
+published automatically once upload succeeds, without manual approval.
+
+Explicit version tags remain supported: they must match the tagged
+`Cargo.toml`. Prerelease tags such as `v0.1.3-rc.1` create prereleases.
+The built-in `GITHUB_TOKEN` needs `contents: write` for the publish job, and
+repository rules must permit it to create version tags. No personal token is
+needed; publishing happens in the same workflow rather than relying on a
+bot-created tag to trigger another workflow.
 
 Download `SHA256SUMS` alongside the four packages and verify them with:
 
