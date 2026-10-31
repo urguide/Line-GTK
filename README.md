@@ -47,6 +47,11 @@ Animation and static CDN paths are tried sequentially using the legacy Android,
 uppercase ANDROID and iPhone variants (including `@2x` names). An animation miss
 is persisted only when every candidate reports 404/410; mixed transient failures
 remain retryable. Older Android-only miss markers are revalidated across all paths.
+Rust resolves omitted sticker versions from the owned-package cache/API (legacy
+version 1 fallback if lookup is unavailable). Explicit versions take precedence.
+Ownership rejection removes the matching recent sticker and deletes ownership
+snapshots atomically for that account, preventing stale catalog fallback from
+restoring rejected ownership. Failed sends never persist a successful message.
 Attachment progress is emitted by Rust at preparation, upload and local-save
 stages. Every upload operation emits one terminal success/failure event before
 its response, including early validation failures, so the UI can close progress.

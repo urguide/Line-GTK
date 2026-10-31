@@ -292,12 +292,64 @@ impl<T: Transport> Engine<T> {
                             .catalog("recent_stickers", i64::MAX)?
                             .unwrap_or(json!([]));
                     }
+                    if method == "send_sticker" {
+                        let explicit = crate::message::string(&params["version"]).trim().to_owned();
+                        if !explicit.is_empty() {
+                            params["version"] = json!(explicit);
+                        } else {
+                            let chooser = self.store.catalog("list_stickers", 30 * 60_000)?;
+                            let cached =
+                                self.store
+                                    .catalog("owned_stickers", 86_400_000)?
+                                    .or_else(|| {
+                                        chooser
+                                            .filter(|v| !v["partial"].as_bool().unwrap_or(false))
+                                            .and_then(|v| v.get("products").cloned())
+                                    });
+                            let owned = if let Some(owned) = cached {
+                                owned
+                            } else {
+                                self.pace(self.last_request, self.page_pause, generation)?;
+                                let query = self.transport.call(
+                                    "bridge_owned_stickers",
+                                    json!({}),
+                                    generation,
+                                );
+                                self.last_request = Some(Instant::now());
+                                self.valid(generation)?;
+                                match query {
+                                    Ok(owned) => {
+                                        self.store.save_catalog("owned_stickers", &owned)?;
+                                        owned
+                                    }
+                                    Err(_) => Value::Null, // Legacy behavior uses version 1 when lookup fails.
+                                }
+                            };
+                            params["version"] = json!(crate::stickers::package_version(
+                                &owned,
+                                params["packageId"].as_str().unwrap_or_default()
+                            ));
+                        }
+                    }
                     self.pace(self.last_request, self.page_pause, generation)?;
-                    let mut value =
-                        self.transport
-                            .application(&method, params.clone(), generation)?;
+                    let operation = self
+                        .transport
+                        .application(&method, params.clone(), generation);
                     self.last_request = Some(Instant::now());
                     self.valid(generation)?;
+                    let mut value = match operation {
+                        Err(error)
+                            if method == "send_sticker"
+                                && crate::stickers::not_owned(&error.to_string()) =>
+                        {
+                            self.store.reject_sticker(
+                                params["stickerId"].as_str().unwrap_or_default(),
+                                params["packageId"].as_str().unwrap_or_default(),
+                            )?;
+                            bail!("sticker_not_owned");
+                        }
+                        other => other?,
+                    };
                     if cached_kind {
                         self.store.decorate_chats(&mut value)?;
                         self.store.save_catalog(&method, &value)?;
@@ -337,7 +389,7 @@ impl<T: Transport> Engine<T> {
                                 .and_then(|v| v.as_array().cloned())
                                 .unwrap_or_default();
                             recent.retain(|s| s["stickerId"] != params["stickerId"]);
-                            recent.insert(0, params.clone());
+                            recent.insert(0, json!({"stickerId":params["stickerId"],"packageId":params["packageId"],"version":params["version"]}));
                             recent.truncate(200);
                             self.store.save_catalog("recent_stickers", &json!(recent))?;
                         }

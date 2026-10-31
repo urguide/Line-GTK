@@ -5,6 +5,43 @@ import { packRaw, unpackRaw } from "../src/raw_codec.ts";
 import { coerceI64 } from "../src/messages.ts";
 import { unsendFromOperation } from "../src/events.ts";
 
+Deno.test("sticker RPC requires Rust-selected version and propagates ownership errors", async () => {
+  let count = 0;
+  let reject = false;
+  const client = {
+    base: {
+      talk: {
+        sendMessage: (p: Record<string, unknown>) => {
+          count++;
+          assertEquals(
+            (p.contentMetadata as Record<string, string>).STKVER,
+            "8",
+          );
+          if (reject) throw new Error("USER_NOT_STICKER_OWNER");
+          return Promise.resolve({ id: "123" });
+        },
+      },
+    },
+  } as unknown as Client;
+  const api = createApi(() => client, "/unused");
+  const p = { chatMid: "u1", stickerId: "10", packageId: "20", version: "8" };
+  assertEquals(await api("bridge_send_sticker", p), {
+    rawMessage: { id: "123" },
+  });
+  reject = true;
+  await assertRejects(
+    () => api("bridge_send_sticker", p),
+    Error,
+    "USER_NOT_STICKER_OWNER",
+  );
+  await assertRejects(
+    () => api("bridge_send_sticker", { ...p, version: undefined }),
+    Error,
+    "sticker_version_required",
+  );
+  assertEquals(count, 2);
+});
+
 Deno.test("Rust-normalized GIF keeps animation flags and MIME in the E2EE RPC", async () => {
   const directory = await Deno.makeTempDir();
   try {

@@ -8,6 +8,34 @@ fn numeric(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
 }
 
+pub fn package_version(owned: &Value, package: &str) -> String {
+    let products = owned
+        .as_array()
+        .or_else(|| owned["productList"].as_array())
+        .or_else(|| owned["1"].as_array());
+    products
+        .into_iter()
+        .flatten()
+        .find_map(|product| {
+            let id = string(product.get("id").unwrap_or(&product["1"]));
+            if id != package {
+                return None;
+            }
+            let version = string(
+                product
+                    .get("latestVersion")
+                    .or_else(|| product.get("version"))
+                    .unwrap_or(&product["21"]),
+            );
+            (!version.trim().is_empty()).then(|| version.trim().to_owned())
+        })
+        .unwrap_or_else(|| "1".into())
+}
+
+pub fn not_owned(error: &str) -> bool {
+    error.contains("USER_NOT_STICKER_OWNER") || error.to_ascii_lowercase().contains("not owned")
+}
+
 pub fn metadata(bytes: &[u8]) -> Result<Value> {
     let value: Value = serde_json::from_slice(bytes)?;
     if !value["stickers"].is_array() {

@@ -121,13 +121,16 @@ export function createApi(getClient: () => Client | null, transfer: string) {
         };
       }
       case "bridge_send_sticker": {
+        if (typeof p.version !== "string" || !p.version.trim()) {
+          throw new Error("sticker_version_required");
+        }
         const raw = await c.base.talk.sendMessage({
           to: String(p.chatMid),
           contentType: "STICKER",
           contentMetadata: {
             STKID: String(p.stickerId),
             STKPKGID: String(p.packageId),
-            STKVER: String(p.version ?? "1"),
+            STKVER: p.version,
           },
           e2ee: false,
         });

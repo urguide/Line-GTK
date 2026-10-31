@@ -143,6 +143,30 @@ impl Store {
         Ok(())
     }
 
+    /// Remove the rejected recent and all ownership snapshots atomically. Delete
+    /// instead of merely expiring: stale catalog fallback must not restore it.
+    pub fn reject_sticker(&mut self, sticker: &str, package: &str) -> Result<()> {
+        let mut recent = self
+            .catalog("recent_stickers", i64::MAX)?
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        recent.retain(|s| {
+            crate::message::string(&s["stickerId"]) != sticker
+                || crate::message::string(&s["packageId"]) != package
+        });
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO catalogs VALUES(?1,'recent_stickers',?2,?3)",
+            params![self.account, now(), serde_json::to_string(&recent)?],
+        )?;
+        tx.execute(
+            "DELETE FROM catalogs WHERE account=?1 AND kind IN ('owned_stickers','list_stickers')",
+            params![self.account],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn set_retention(&mut self, mode: &str) {
         self.ttl_ms = match mode {
             "day" => 86_400_000,
