@@ -1621,6 +1621,10 @@ pub(super) fn append_video_placeholder(
     msg: &MessageInfo,
     failed: bool,
 ) {
+    let available = msg
+        .file_path
+        .as_deref()
+        .is_some_and(|path| std::path::Path::new(path).is_file());
     let box_ = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(6)
@@ -1628,14 +1632,16 @@ pub(super) fn append_video_placeholder(
         .valign(gtk::Align::Center)
         .width_request(180)
         .height_request(110)
-        .css_classes(if failed {
+        .css_classes(if available {
+            vec!["line-video-placeholder"]
+        } else if failed {
             vec!["line-video-placeholder", "line-media-failed"]
         } else {
             vec!["line-video-placeholder", "line-media-placeholder"]
         })
         .build();
     let icon = gtk::Image::builder()
-        .icon_name(if failed {
+        .icon_name(if failed || available {
             "media-playback-start-symbolic"
         } else {
             "content-loading-symbolic"
@@ -1644,7 +1650,7 @@ pub(super) fn append_video_placeholder(
         .css_classes(["line-video-play-badge"])
         .build();
     let label = gtk::Label::builder()
-        .label(if failed {
+        .label(if failed && !available {
             crate::i18n::t("video_unavailable")
         } else {
             crate::i18n::t("media_open_video")

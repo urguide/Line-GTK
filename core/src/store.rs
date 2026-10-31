@@ -70,6 +70,9 @@ pub fn merge(old: Value, incoming: &Value) -> Value {
                     key.as_str(),
                     "imagePath" | "filePath" | "audioPath" | "rawMessage"
                 )
+                && !(key == "imagePath"
+                    && incoming["needsMedia"] == false
+                    && incoming["filePath"].is_string())
             {
                 continue;
             }

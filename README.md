@@ -119,6 +119,10 @@ Generic attachments retain a short ASCII basename extension (for example
 Sender-controlled directory components are never used in cache paths; missing
 suffixes use PDF/plain-text MIME hints or `.bin`. Older `.bin` downloads with a
 known filename extension are renamed locally without re-downloading.
+Downloaded image/video originals remain available even if thumbnail generation
+fails: incomplete previews are removed, images can display the original, and
+videos retain a playable file path. Opening them again uses the local original
+instead of downloading again solely because a thumbnail is unavailable.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

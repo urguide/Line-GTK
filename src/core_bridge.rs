@@ -290,6 +290,21 @@ impl Transport for Ipc {
     }
 
     fn materialize(&self, row: &Value, generation: u64) -> Result<Value> {
+        self.materialize_with_preview(row, generation, |file, dest| self.thumb(file, dest))
+    }
+
+    fn emit(&self, event: Value) {
+        self.emit_ui_event(event);
+    }
+}
+
+impl Ipc {
+    fn materialize_with_preview(
+        &self,
+        row: &Value,
+        generation: u64,
+        make_preview: impl FnOnce(&Path, &Path) -> Result<()>,
+    ) -> Result<Value> {
         self.active(generation)?;
         let id = row["id"].as_str().context("media ID missing")?;
         if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
@@ -423,17 +438,34 @@ impl Transport for Ipc {
             }
             "IMAGE" | "VIDEO" => {
                 let thumb = dir.join(format!("{id}.thumb.jpg"));
-                if self.cached_media_file(&thumb).is_none() {
+                let preview = self.cached_media_file(&thumb).map(Ok).unwrap_or_else(|| {
                     // Do not let ffmpeg follow an invalid/escaping thumbnail link.
                     if std::fs::symlink_metadata(&thumb).is_ok() {
                         std::fs::remove_file(&thumb)?;
                     }
-                    self.thumb(&file, &thumb)?;
-                }
-                updated["imagePath"] = json!(
+                    make_preview(&file, &thumb)?;
                     self.cached_media_file(&thumb)
-                        .context("invalid cached thumbnail")?
-                );
+                        .context("invalid cached thumbnail")
+                });
+                self.active(generation)?;
+                match preview {
+                    Ok(path) => updated["imagePath"] = json!(path),
+                    Err(error) => {
+                        tracing::warn!("downloaded original available without thumbnail: {error}");
+                        if let Err(cleanup) = std::fs::remove_file(&thumb)
+                            && cleanup.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::warn!("download preview cleanup: {cleanup}");
+                        }
+                        // Images can be displayed directly. A video without a
+                        // thumbnail is still playable through its filePath.
+                        updated["imagePath"] = if kind == "IMAGE" {
+                            json!(file)
+                        } else {
+                            Value::Null
+                        };
+                    }
+                }
             }
             "STICKER" => updated["imagePath"] = json!(file),
             "AUDIO" => updated["audioPath"] = json!(file),
@@ -442,7 +474,7 @@ impl Transport for Ipc {
         Ok(updated)
     }
 
-    fn emit(&self, event: Value) {
+    fn emit_ui_event(&self, event: Value) {
         let ev = if let Some(id) = event["id"].as_u64() {
             Some(ProtocolEvent::Response {
                 id,
@@ -495,6 +527,191 @@ impl Transport for Ipc {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+
+    #[test]
+    fn downloaded_original_survives_thumbnail_failure_and_cached_reopen() {
+        struct PreviewHost {
+            ipc: Ipc,
+            program: PathBuf,
+        }
+        impl Transport for PreviewHost {
+            fn call(&self, m: &str, p: Value, g: u64) -> Result<Value> {
+                self.ipc.call(m, p, g)
+            }
+            fn emit(&self, e: Value) {
+                self.ipc.emit(e);
+            }
+            fn materialize(&self, row: &Value, g: u64) -> Result<Value> {
+                self.ipc.materialize_with_preview(row, g, |file, dest| {
+                    Ipc::thumb_with_program(&self.program, file, dest)
+                })
+            }
+        }
+        for kind in ["IMAGE", "VIDEO"] {
+            for mode in ["missing", "failed", "empty", "success"] {
+                let root = std::env::temp_dir().join(format!(
+                    "line-download-preview-{}-{kind}-{mode}",
+                    std::process::id()
+                ));
+                std::fs::create_dir_all(root.join("cache/transfer")).unwrap();
+                let program = root.join("fake-ffmpeg");
+                if mode != "missing" {
+                    use std::os::unix::fs::PermissionsExt;
+                    let script = match mode {
+                        "failed" => {
+                            "#!/bin/sh\nfor last; do :; done\nprintf partial > \"$last\"\nexit 1\n"
+                        }
+                        "empty" => "#!/bin/sh\nfor last; do :; done\n: > \"$last\"\n",
+                        _ => "#!/bin/sh\nfor last; do :; done\nprintf thumbnail > \"$last\"\n",
+                    };
+                    std::fs::write(&program, script).unwrap();
+                    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                }
+                let temporary = root.join("cache/transfer/original.part");
+                std::fs::write(&temporary, b"original media bytes").unwrap();
+                let mut child = Command::new("cat")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let stdout = child.stdout.take().unwrap();
+                let replies: Replies = Arc::default();
+                let waiting = replies.clone();
+                let responder = std::thread::spawn(move || {
+                    let mut line = String::new();
+                    BufReader::new(stdout).read_line(&mut line).unwrap();
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let id = req["id"].as_u64().unwrap();
+                    waiting.lock().unwrap().remove(&id).unwrap().send(Response{id:Some(id),ok:Some(true),result:Some(json!({"path":temporary,"mime":if kind=="IMAGE"{"image/png"}else{"video/mp4"}})),error:None,event:None,extra:Value::Null}).unwrap();
+                    assert_eq!(req["method"], "bridge_download");
+                });
+                let (events, rx) = async_channel::unbounded();
+                let ids = Arc::new(AtomicU64::new(1));
+                let generation = Arc::new(AtomicU64::new(1));
+                let input = Arc::new(Mutex::new(child.stdin.take()));
+                let ipc = Ipc {
+                    stdin: input.clone(),
+                    replies,
+                    ids: ids.clone(),
+                    generation: generation.clone(),
+                    events,
+                    data: root.clone(),
+                    asset_at: Mutex::new(None),
+                };
+                let db = root.join("messages.sqlite3");
+                let mut store = Store::open(&db).unwrap();
+                store.set_account("me");
+                store.save_messages("u1",&[json!({"id":"123","contentType":kind,"imagePath":"/stale/thumbnail.jpg"})]).unwrap();
+                let engine = Engine::new(
+                    store,
+                    PreviewHost { ipc, program },
+                    generation.clone(),
+                    root.join("legacy"),
+                );
+                let (tx, commands) = mpsc::channel();
+                let worker = std::thread::spawn(move || engine.run(commands));
+                tx.send(CoreCommand::Session {
+                    account: "me".into(),
+                    generation: 1,
+                })
+                .unwrap();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    for request_id in [42, 43] {
+                        tx.send(CoreCommand::Download {
+                            id: request_id,
+                            chat: "u1".into(),
+                            message: "123".into(),
+                            generation: 1,
+                        })
+                        .unwrap();
+                        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                        let mut ready = false;
+                        loop {
+                            let event = loop {
+                                if let Ok(event) = rx.try_recv() {
+                                    break event;
+                                }
+                                assert!(
+                                    std::time::Instant::now() < deadline,
+                                    "no download response"
+                                );
+                                std::thread::sleep(Duration::from_millis(5));
+                            };
+                            match event {
+                                ProtocolEvent::MediaReady {
+                                    image_path,
+                                    file_path,
+                                    ..
+                                } => {
+                                    ready = true;
+                                    let file = file_path.unwrap();
+                                    assert_eq!(
+                                        std::fs::read(&file).unwrap(),
+                                        b"original media bytes"
+                                    );
+                                    if mode == "success" {
+                                        assert!(image_path.ends_with("123.thumb.jpg"));
+                                    } else if kind == "IMAGE" {
+                                        assert_eq!(image_path, file);
+                                    } else {
+                                        assert!(image_path.is_empty());
+                                    }
+                                }
+                                ProtocolEvent::MediaFailed { .. } => {
+                                    panic!("thumbnail failure is not a download failure")
+                                }
+                                ProtocolEvent::Response {
+                                    id,
+                                    ok,
+                                    result,
+                                    error,
+                                } => {
+                                    assert_eq!(id, request_id);
+                                    assert!(ok, "{mode}/{kind}: {error:?}");
+                                    assert!(ready);
+                                    assert_eq!(
+                                        std::fs::read(result["path"].as_str().unwrap()).unwrap(),
+                                        b"original media bytes"
+                                    );
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                        // Simulate disconnected network before the second request.
+                        *input.lock().unwrap() = None;
+                    }
+                    responder.join().unwrap();
+                    assert_eq!(ids.load(Ordering::SeqCst), 2);
+                }));
+                tx.send(CoreCommand::Stop).unwrap();
+                let _ = child.kill();
+                let _ = child.wait();
+                if outcome.is_err() {
+                    generation.fetch_add(1, Ordering::SeqCst);
+                }
+                worker.join().unwrap();
+                if let Err(e) = outcome {
+                    std::panic::resume_unwind(e);
+                }
+                assert_eq!(
+                    root.join("cache/media/123.thumb.jpg").exists(),
+                    mode == "success"
+                );
+                let mut store = Store::open(&db).unwrap();
+                store.set_account("me");
+                let saved = store.message("u1", "123").unwrap().unwrap();
+                assert!(Path::new(saved["filePath"].as_str().unwrap()).is_file());
+                assert_eq!(saved["needsMedia"], false);
+                if kind == "VIDEO" && mode != "success" {
+                    assert!(saved["imagePath"].is_null());
+                }
+                drop(store);
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
     #[test]
     fn confirmed_mute_is_forwarded_to_ui_event() {
         let (events, rx) = async_channel::unbounded();
