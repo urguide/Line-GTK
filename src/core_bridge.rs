@@ -430,6 +430,10 @@ impl Transport for Ipc {
             let chat_mid = event["chatMid"].as_str().unwrap_or_default().to_owned();
             let message_id = event["messageId"].as_str().unwrap_or_default().to_owned();
             match event["event"].as_str() {
+                Some("chat_mute") => Some(ProtocolEvent::ChatMute {
+                    mid: event["mid"].as_str().unwrap_or_default().to_owned(),
+                    muted: event["muted"].as_bool().unwrap_or(false),
+                }),
                 Some("upload_progress") => Some(ProtocolEvent::UploadProgress {
                     chat_mid,
                     progress: event["progress"].as_f64().unwrap_or(0.0),
@@ -467,6 +471,25 @@ impl Transport for Ipc {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+    #[test]
+    fn confirmed_mute_is_forwarded_to_ui_event() {
+        let (events, rx) = async_channel::unbounded();
+        let ipc = Ipc {
+            stdin: Arc::new(Mutex::new(None)),
+            replies: Arc::default(),
+            ids: Arc::new(AtomicU64::new(1)),
+            generation: Arc::new(AtomicU64::new(1)),
+            events,
+            data: PathBuf::new(),
+            asset_at: Mutex::new(None),
+        };
+        for muted in [true, false] {
+            ipc.emit(json!({"event":"chat_mute","mid":"u1","muted":muted}));
+            assert!(
+                matches!(rx.try_recv().unwrap(),ProtocolEvent::ChatMute{mid,muted:actual} if mid=="u1" && actual==muted)
+            );
+        }
+    }
 
     #[test]
     fn attachment_types_reach_rpc_preview_and_saved_message() {

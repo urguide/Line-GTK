@@ -84,6 +84,10 @@ A successful lookup is retained in the account's chat/friend catalogs even when
 the friend-request API rejects an existing friend or is unavailable; the result
 separately reports `requestSent`. Missing users remain errors, and the UI waits
 for the lookup result before showing success and refreshing the friend list.
+Mute/unmute waits for LINE acknowledgement, then updates both account-scoped
+chat/friend catalogs transactionally before emitting the Rust `ChatMute` UI
+event. Rejected changes leave the previous state intact; offline list fallback
+and restart retain successful changes without resetting catalog freshness.
 Attachment progress is emitted by Rust at preparation, upload and local-save
 stages. Every upload operation emits one terminal success/failure event before
 its response, including early validation failures, so the UI can close progress.

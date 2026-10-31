@@ -466,12 +466,9 @@ pub(super) fn toggle_chat_mute(state: &AppState) {
         .unwrap_or(false);
     let next = !currently;
     match state.sidecar.mute_chat(&mid, next) {
-        Ok(_) => {
-            if let Some(chat) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == mid) {
-                chat.muted = next;
-            }
-            update_mute_btn(state, next);
-        }
+        // The worker's ChatMute event updates UI only after LINE and SQLite
+        // acknowledge the change. Enqueuing a request is not confirmation.
+        Ok(_) => {}
         Err(e) => toast(
             state,
             &crate::i18n::tf("mute_failed", &[("error", &e.to_string())]),

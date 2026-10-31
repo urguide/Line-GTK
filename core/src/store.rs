@@ -203,6 +203,47 @@ impl Store {
         Ok(())
     }
 
+    /// Persist a server-acknowledged notification setting in both catalogs.
+    /// Preserve existing metadata and cache age; partial rows permit offline
+    /// fallback even when this contact was not present in the previous lists.
+    pub fn set_chat_muted(&mut self, mid: &str, muted: bool) -> Result<()> {
+        let now = self.now();
+        let tx = self.db.transaction()?;
+        for (kind, key) in [("list_chats", "chats"), ("list_friends", "friends")] {
+            let body: Option<String> = tx
+                .query_row(
+                    "SELECT body FROM catalogs WHERE account=?1 AND kind=?2",
+                    params![self.account, kind],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let existed = body.is_some();
+            let mut catalog: Value = body
+                .map(|body| serde_json::from_str(&body))
+                .transpose()?
+                .unwrap_or_else(|| json!({key:[],"partial":true}));
+            let rows = catalog[key]
+                .as_array_mut()
+                .context("invalid contact catalog")?;
+            if let Some(row) = rows.iter_mut().find(|row| row["mid"] == mid) {
+                row["muted"] = json!(muted);
+            } else {
+                rows.push(json!({"mid":mid,"name":mid,"kind":"dm","muted":muted,"unread":0,"lastActivity":0,"preview":""}));
+            }
+            if existed {
+                tx.execute(
+                    "UPDATE catalogs SET body=?1 WHERE account=?2 AND kind=?3",
+                    params![catalog.to_string(), self.account, kind],
+                )?;
+            } else {
+                tx.execute("INSERT INTO catalogs(account,kind,updated,body,invalidated) VALUES(?1,?2,?3,?4,1)",
+                    params![self.account, kind, now, catalog.to_string()])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Preserve a successful ID lookup for the next list refresh/offline fallback.
     /// Do not reset existing unread counts, mute state, avatars or timestamps.
     pub fn remember_contact(&mut self, contact: &Value) -> Result<()> {

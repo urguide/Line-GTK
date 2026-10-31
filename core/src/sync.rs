@@ -310,6 +310,15 @@ impl<T: Transport> Engine<T> {
                 }
                 let result = (|| {
                     self.valid(generation)?;
+                    if method == "mute_chat" {
+                        let mid = params["mid"].as_str().unwrap_or_default();
+                        if !mid.starts_with('u') || mid.len() < 2 {
+                            bail!("mute_dm_only");
+                        }
+                        if !params["muted"].is_boolean() {
+                            bail!("invalid_mute_state");
+                        }
+                    }
                     if method == "invalidate_catalogs" {
                         self.store.invalidate_catalogs()?;
                         return Ok(json!({}));
@@ -464,7 +473,17 @@ impl<T: Transport> Engine<T> {
                     if method == "add_friend" {
                         self.store.remember_contact(&value)?;
                     }
-                    if matches!(method.as_str(), "mute_chat" | "clear_cache") {
+                    if method == "mute_chat" {
+                        let mid = params["mid"].as_str().unwrap_or_default();
+                        let muted = params["muted"].as_bool().unwrap_or(false);
+                        if value["mid"] != mid || value["muted"] != muted {
+                            bail!("mute setting not acknowledged");
+                        }
+                        self.store.set_chat_muted(mid, muted)?;
+                        self.transport
+                            .emit(json!({"event":"chat_mute","mid":mid,"muted":muted}));
+                    }
+                    if method == "clear_cache" {
                         self.store.invalidate_catalogs()?;
                     }
                     if method == "unsend_message" {

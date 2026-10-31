@@ -299,6 +299,11 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             if let Some(chat) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == mid) {
                 chat.muted = muted;
             }
+            if let Some(ui) = state.friends_ui.borrow().as_ref()
+                && let Some(friend) = ui.friends.borrow_mut().iter_mut().find(|c| c.mid == mid)
+            {
+                friend.muted = muted;
+            }
             if state.current_chat.borrow().as_deref() == Some(mid.as_str()) {
                 update_mute_btn(state, muted);
             }
