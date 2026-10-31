@@ -83,21 +83,34 @@ impl Ipc {
         .ok()
     }
     fn sticker(&self, id: &str, animated: bool, generation: u64) -> Result<PathBuf> {
-        numeric(id)?;
-        if animated {
-            let path = self
-                .data
-                .join("cache/stickers")
-                .join(format!("{id}.anim.png"));
-            if let Ok(file)=self.asset(&format!("https://stickershop.line-scdn.net/stickershop/v1/sticker/{id}/android/sticker_animation.png"),&path,generation){return Ok(file);}
-        }
-        self.asset(
-            &format!(
-                "https://stickershop.line-scdn.net/stickershop/v1/sticker/{id}/android/sticker.png"
-            ),
-            &self.data.join("cache/stickers").join(format!("{id}.png")),
-            generation,
-        )
+        use line_gtk_core::sticker_cache::{self, Fetch};
+        self.active(generation)?;
+        let cfg = crate::config::AppConfig::load(&self.data);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as u64;
+        let result = sticker_cache::load(
+            &self.data.join("cache/stickers"),
+            id,
+            animated,
+            sticker_cache::animation_miss_ttl(&cfg.cache_retention),
+            now,
+            |animation, dest| {
+                let file = if animation {
+                    "sticker_animation.png"
+                } else {
+                    "sticker.png"
+                };
+                match self.asset(&format!("https://stickershop.line-scdn.net/stickershop/v1/sticker/{id}/android/{file}"),dest,generation) {
+                    Ok(_)=>Ok(Fetch::Saved),
+                    Err(error) if error.downcast_ref::<reqwest::Error>().and_then(reqwest::Error::status)
+                        .is_some_and(|status|sticker_cache::confirms_absence(status.as_u16()))=>Ok(Fetch::Missing),
+                    Err(error)=>Err(error),
+                }
+            },
+        );
+        self.active(generation)?;
+        result
     }
     fn catalogs(&self, method: &str, previous: &Value, generation: u64) -> Result<Value> {
         let mut result = line_gtk_core::catalog::load(method, previous, |rpc, args| {

@@ -38,6 +38,11 @@ Sticker package failures are isolated: a failed download or damaged metadata
 uses that account's previously rendered pack when available, otherwise skips
 only that pack. Recents and healthy packs still render; partial results retry
 on the next open, and corrupt metadata files are discarded for a clean refetch.
+Missing sticker animations (HTTP 404/410) are negatively cached on disk and use
+the static image without another animation request, including after restart.
+The retry period follows the existing setting: Day 1 day, Week/Smart 7 days,
+Month 30 days, Forever until cache clearing. Network errors and 403/429/5xx are
+not recorded as missing. Old untyped `.anim.miss` files are revalidated once.
 Attachment progress is emitted by Rust at preparation, upload and local-save
 stages. Every upload operation emits one terminal success/failure event before
 its response, including early validation failures, so the UI can close progress.
