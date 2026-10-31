@@ -260,11 +260,18 @@ impl<T: Transport> Engine<T> {
                     if cached_kind
                         && !params["force"].as_bool().unwrap_or(false)
                         && let Some(mut value) = self.store.catalog(&method, 30 * 60_000)?
+                        && !value["partial"].as_bool().unwrap_or(false)
                     {
                         self.store.decorate_chats(&mut value)?;
                         return Ok(value);
                     }
                     params["account"] = json!(self.account);
+                    if matches!(method.as_str(), "list_chats" | "list_friends") {
+                        params["previous"] = json!({
+                            "chats":self.store.catalog("list_chats",i64::MAX)?.unwrap_or_default()["chats"],
+                            "friends":self.store.catalog("list_friends",i64::MAX)?.unwrap_or_default()["friends"],
+                        });
+                    }
                     if method == "list_stickers" {
                         params["recent"] = self
                             .store
@@ -306,7 +313,7 @@ impl<T: Transport> Engine<T> {
                             if let Some(object) = message.as_object_mut() {
                                 object.remove("rawMessage");
                             }
-                            value = json!({"message":message});
+                            value = json!({"message":message,"sent":value["sent"],"fallback":value["fallback"]});
                         }
                         self.store.invalidate_catalogs()?;
                         if method == "send_sticker" {

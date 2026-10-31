@@ -29,6 +29,11 @@ upload route for other destinations. Legacy `stickers-index.json` recents are
 merged into the first signed-in account once, without deleting the source file.
 Local capture/playback failures restart the affected audio process with a delay;
 the PCM socket and LINE call remain connected until cancellation or socket loss.
+Catalog refreshes recover independently from failed boxes, contact batches or
+group APIs: Rust tries user profiles and unresolved contacts sequentially and
+retains this account's cached rows and avatars. Partial results do not suppress
+the next refresh. Rust also preserves the legacy postback-to-text fallback;
+successful postbacks never send an extra message.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

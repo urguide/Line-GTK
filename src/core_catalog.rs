@@ -1,12 +1,8 @@
 //! Rust-owned contact/chat/sticker presentation, CDN files and outgoing media staging.
 use crate::core_bridge::Ipc;
 use anyhow::{Context, Result, bail};
-use line_gtk_core::{
-    message::{integer, string},
-    sync::Transport,
-};
+use line_gtk_core::{message::string, sync::Transport};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -15,12 +11,6 @@ fn numeric(s: &str) -> Result<&str> {
         bail!("invalid numeric ID");
     }
     Ok(s)
-}
-fn picture(row: &Value) -> Option<&str> {
-    row["picturePath"]
-        .as_str()
-        .or_else(|| row["pictureStatus"].as_str())
-        .or_else(|| row["extra"]["groupExtra"]["picturePath"].as_str())
 }
 
 impl Ipc {
@@ -109,70 +99,27 @@ impl Ipc {
             generation,
         )
     }
-    fn catalogs(&self, method: &str, generation: u64) -> Result<Value> {
-        let mut chats = BTreeMap::<String, Value>::new();
-        if method == "list_chats" {
-            let boxes = self.call("bridge_boxes", json!({}), generation)?;
-            for row in boxes["messageBoxes"].as_array().into_iter().flatten() {
-                let mid = string(&row["id"]);
-                chats.insert(mid.clone(),json!({"mid":mid,"name":mid,"kind":if mid.starts_with('c'){"group"}else{"dm"},"lastActivity":integer(&row["lastDeliveredMessageId"]["deliveredTime"]),"unread":integer(&row["unreadCount"]),"preview":""}));
-            }
-        }
-        let ids = self.call("bridge_contact_ids", json!({}), generation)?;
-        let mut mids: Vec<Value> = ids.as_array().cloned().unwrap_or_default();
-        for mid in chats.keys().filter(|mid| mid.starts_with('u')) {
-            if !mids.iter().any(|v| v.as_str() == Some(mid)) {
-                mids.push(json!(mid));
-            }
-        }
-        for chunk in mids.chunks(100) {
-            let contacts = self.call("bridge_contacts", json!({"mids":chunk}), generation)?;
-            for row in contacts.as_array().into_iter().flatten() {
-                let mid = string(&row["mid"]);
-                if mid.is_empty() {
-                    continue;
-                }
-                let mut entry = chats
-                    .remove(&mid)
-                    .unwrap_or(json!({"mid":mid,"lastActivity":0,"unread":0,"preview":""}));
-                entry["name"] = json!(row["displayName"].as_str().unwrap_or(&mid));
-                entry["kind"] = json!(if string(&row["type"]).contains("BOT") {
-                    "bot"
-                } else {
-                    "dm"
-                });
-                entry["muted"] = json!(row["notificationDisabled"].as_bool().unwrap_or(false));
-                entry["avatarPath"] = json!(self.avatar(&mid, picture(row), generation));
-                chats.insert(mid, entry);
-            }
-        }
-        if method == "list_chats" {
-            let groups = self.call("bridge_groups", json!({}), generation)?;
-            for row in groups.as_array().into_iter().flatten() {
-                let mid = string(&row["chatMid"]);
-                if mid.is_empty() {
-                    continue;
-                }
-                let mut entry = chats
-                    .remove(&mid)
-                    .unwrap_or(json!({"mid":mid,"lastActivity":0,"unread":0,"preview":""}));
-                entry["name"] = json!(row["chatName"].as_str().unwrap_or(&mid));
-                entry["kind"] = json!("group");
-                entry["avatarPath"] = json!(self.avatar(&mid, picture(row), generation));
-                chats.insert(mid, entry);
-            }
-        }
-        let mut rows: Vec<_> = chats.into_values().collect();
-        rows.sort_by(|a, b| {
-            integer(&b["lastActivity"])
-                .cmp(&integer(&a["lastActivity"]))
-                .then_with(|| string(&a["name"]).cmp(&string(&b["name"])))
-        });
-        Ok(if method == "list_chats" {
-            json!({"chats":rows,"cached":false})
+    fn catalogs(&self, method: &str, previous: &Value, generation: u64) -> Result<Value> {
+        let mut result = line_gtk_core::catalog::load(method, previous, |rpc, args| {
+            self.call(rpc, args, generation)
+        })?;
+        self.active(generation)?;
+        let key = if method == "list_friends" {
+            "friends"
         } else {
-            json!({"friends":rows,"cached":false})
-        })
+            "chats"
+        };
+        for row in result[key].as_array_mut().into_iter().flatten() {
+            if let Some(path) = self.avatar(
+                &string(&row["mid"]),
+                line_gtk_core::catalog::picture(row),
+                generation,
+            ) {
+                row["avatarPath"] = json!(path);
+            }
+        }
+        self.active(generation)?;
+        Ok(result)
     }
     fn sticker_catalog(&self, p: &Value, generation: u64) -> Result<Value> {
         let owned = self.call("bridge_owned_stickers", json!({}), generation)?;
@@ -321,7 +268,7 @@ impl Ipc {
     ) -> Result<Value> {
         self.active(generation)?;
         match method {
-            "list_chats" | "list_friends" => self.catalogs(method, generation),
+            "list_chats" | "list_friends" => self.catalogs(method, &p["previous"], generation),
             "list_stickers" => self.sticker_catalog(&p, generation),
             "send_media" | "send_audio" => {
                 if method == "send_audio" {
@@ -351,7 +298,9 @@ impl Ipc {
                 Ok(result)
             }
             "mute_chat" => self.call("bridge_mute", p, generation),
-            "send_postback" => self.call("bridge_postback", p, generation),
+            "send_postback" => line_gtk_core::postback::send(&p, |method, args| {
+                self.call(method, args, generation)
+            }),
             "add_friend" => {
                 let row = self.call("bridge_find_contact", p.clone(), generation)?;
                 p["mid"] = row["mid"].clone();

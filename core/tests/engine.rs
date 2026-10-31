@@ -86,3 +86,95 @@ fn worker_returns_first_page_then_repairs_gap_and_reuses_saved_pages() {
     worker.join().unwrap();
     assert_eq!(*calls.lock().unwrap(), vec![150, 130, 110]);
 }
+
+#[test]
+fn forced_catalog_refresh_receives_stale_cache_and_postback_fallback_is_persisted() {
+    struct Recovery {
+        events: mpsc::Sender<Value>,
+    }
+    impl Transport for Recovery {
+        fn call(&self, _: &str, _: Value, _: u64) -> Result<Value> {
+            unreachable!()
+        }
+        fn materialize(&self, row: &Value, _: u64) -> Result<Value> {
+            Ok(row.clone())
+        }
+        fn emit(&self, event: Value) {
+            self.events.send(event).unwrap();
+        }
+        fn application(&self, method: &str, p: Value, _: u64) -> Result<Value> {
+            match method {
+                "list_chats" => {
+                    assert_eq!(p["previous"]["chats"][0]["name"], "Saved");
+                    line_gtk_core::catalog::load(method, &p["previous"], |_, _| {
+                        anyhow::bail!("offline")
+                    })
+                }
+                "send_postback" => line_gtk_core::postback::send(&p, |rpc, _| {
+                    if rpc == "bridge_postback" {
+                        anyhow::bail!("unsupported");
+                    }
+                    Ok(
+                        json!({"rawMessage":{"id":"9007199254740993","text":"click","createdTime":10,"contentType":"NONE"}}),
+                    )
+                }),
+                _ => panic!("unexpected {method}"),
+            }
+        }
+    }
+    let path =
+        std::env::temp_dir().join(format!("line-engine-catalog-{}.sqlite", std::process::id()));
+    let mut store = Store::open(&path).unwrap();
+    store.set_account("account");
+    store
+        .save_catalog(
+            "list_chats",
+            &json!({"chats":[{"mid":"u1","name":"Saved"}]}),
+        )
+        .unwrap();
+    store.invalidate_catalogs().unwrap();
+    let (events, rx) = mpsc::channel();
+    let engine = Engine::new(
+        store,
+        Recovery { events },
+        Arc::new(AtomicU64::new(1)),
+        PathBuf::from("/nonexistent/legacy"),
+    );
+    let (tx, commands) = mpsc::channel();
+    let worker = std::thread::spawn(move || engine.run(commands));
+    tx.send(Command::Session {
+        account: "account".into(),
+        generation: 1,
+    })
+    .unwrap();
+    tx.send(Command::Operation {
+        id: 1,
+        method: "list_chats".into(),
+        params: json!({"force":true}),
+        generation: 1,
+    })
+    .unwrap();
+    let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["result"]["chats"][0]["name"], "Saved");
+    tx.send(Command::Operation {
+        id: 2,
+        method: "send_postback".into(),
+        params: json!({"chatMid":"u1","data":"click"}),
+        generation: 1,
+    })
+    .unwrap();
+    let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(result["result"]["fallback"], "message");
+    assert_eq!(result["result"]["sent"], true);
+    tx.send(Command::Stop).unwrap();
+    worker.join().unwrap();
+    let mut store = Store::open(&path).unwrap();
+    store.set_account("account");
+    assert_eq!(
+        store.message("u1", "9007199254740993").unwrap().unwrap()["text"],
+        "click"
+    );
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}

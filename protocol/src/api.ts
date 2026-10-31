@@ -79,6 +79,13 @@ export function createApi(getClient: () => Client | null, transfer: string) {
         return await c.base.talk.getAllContactIds({});
       case "bridge_contacts":
         return await c.base.talk.getContacts({ mids: p.mids as string[] });
+      case "bridge_contact":
+        return await c.base.talk.getContact({ mid: String(p.mid) });
+      case "bridge_users":
+        return (await c.fetchUsers()).map((user) => ({
+          mid: user.mid,
+          raw: packRaw(user.raw),
+        }));
       case "bridge_groups":
         return (await c.fetchJoinedChats()).map((chat) => chat.raw);
       case "bridge_owned_stickers": {

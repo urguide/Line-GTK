@@ -133,6 +133,27 @@ Deno.test("API rejects concurrent requests rather than introducing a second queu
   gate.resolve([]);
   await first;
 });
+
+Deno.test("contact fallbacks expose unmodified profile data to Rust", async () => {
+  const profile = {
+    targetProfileDetail: { profileName: "Friend", picturePath: "/avatar" },
+  };
+  const client = {
+    fetchUsers: () => Promise.resolve([{ mid: "u1", raw: profile }]),
+    base: {
+      talk: {
+        getContact: ({ mid }: { mid: string }) =>
+          Promise.resolve({ mid, displayName: "Single" }),
+      },
+    },
+  } as unknown as Client;
+  const api = createApi(() => client, "/unused");
+  assertEquals(await api("bridge_users", {}), [{ mid: "u1", raw: profile }]);
+  assertEquals(await api("bridge_contact", { mid: "u2" }), {
+    mid: "u2",
+    displayName: "Single",
+  });
+});
 Deno.test("media transfer rejects paths outside the exchange directory", async () => {
   const api = createApi(() => ({} as Client), "/unused");
   await assertRejects(
