@@ -670,7 +670,7 @@ async function refreshContactIndex(force = false) {
         const kind = /BOT/i.test(type) ? "bot" : "dm";
         contactIndex.set(mid, {
           name: c.displayName || mid,
-          picturePath: c.picturePath ?? null,
+          picturePath: picturePathOf(c),
           kind,
           muted: !!(c as { notificationDisabled?: boolean })
             .notificationDisabled,
@@ -684,7 +684,7 @@ async function refreshContactIndex(force = false) {
           const type = String(c.type ?? "");
           contactIndex.set(mid, {
             name: c.displayName || mid,
-            picturePath: c.picturePath ?? null,
+            picturePath: picturePathOf(c),
             kind: /BOT/i.test(type) ? "bot" : "dm",
             muted: !!(c as { notificationDisabled?: boolean })
               .notificationDisabled,
@@ -1379,7 +1379,7 @@ async function resolveContactInfo(mid: string): Promise<{
     const type = String(c.type ?? "");
     const info = {
       name: c.displayName || mid,
-      picturePath: c.picturePath ?? null,
+      picturePath: picturePathOf(c),
       kind: /BOT/i.test(type) ? "bot" : mid.startsWith("c") ? "group" : "dm",
       muted: !!(c as { notificationDisabled?: boolean }).notificationDisabled,
     };
@@ -1856,7 +1856,7 @@ async function handle(req: Json) {
           }
           contactIndex.set(String(mid), {
             name: contact.displayName || userid,
-            picturePath: contact.picturePath ?? null,
+            picturePath: picturePathOf(contact),
             kind: "dm",
             muted: false,
           });
