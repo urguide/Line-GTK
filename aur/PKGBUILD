@@ -1,0 +1,45 @@
+# Based on the line-gtk AUR package by Kritthapath Yaviraj and MidnightTale.
+pkgname=line-gtk
+pkgver=0.3.0
+pkgrel=1
+pkgdesc='Unofficial native LINE client for Linux (GTK4 / Libadwaita) - urguide fork'
+arch=('x86_64' 'aarch64')
+url='https://github.com/urguide/Line-GTK'
+license=('GPL-3.0-or-later')
+depends=('gtk4>=4.14' 'libadwaita>=1.5' 'ffmpeg' 'hicolor-icon-theme')
+optdepends=(
+  'poppler: PDF preview in media viewer'
+  'gst-plugins-good: extra video playback codecs'
+  'gst-libav: extra video playback codecs'
+)
+conflicts=('line-gtk-git')
+# Preserve the embedded payload in the Deno-compiled protocol executable.
+options=('!strip')
+source_x86_64=("${url}/releases/download/v${pkgver}/${pkgname}-${pkgver}-x86_64.tar.gz")
+source_aarch64=("${url}/releases/download/v${pkgver}/${pkgname}-${pkgver}-aarch64.tar.gz")
+sha256sums_x86_64=('7e7cf27499dc2da88e68a17e02b100a8cc63342bb46c2a9081c4e64926de3443')
+sha256sums_aarch64=('4ceabc28fbc3f8e018cdc4775d2b58df46dad40bc76060ab7e378f7d46176170')
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}-${CARCH}"
+
+  install -Dm755 line-gtk "${pkgdir}/usr/bin/line-gtk"
+
+  install -d "${pkgdir}/usr/share/line-gtk"
+  cp -a protocol "${pkgdir}/usr/share/line-gtk/protocol"
+  cp -a assets "${pkgdir}/usr/share/line-gtk/assets"
+
+  install -Dm644 dev.linegtk.LineGtk.desktop \
+    "${pkgdir}/usr/share/applications/dev.linegtk.LineGtk.desktop"
+
+  local size
+  for size in 48x48 64x64 128x128 256x256; do
+    install -Dm644 "assets/icons/hicolor/${size}/apps/line-gtk.png" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}/apps/line-gtk.png"
+  done
+  install -Dm644 assets/icons/hicolor/scalable/apps/line-gtk.svg \
+    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/line-gtk.svg"
+
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
