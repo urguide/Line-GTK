@@ -1493,10 +1493,6 @@ fn open_friends_popup(state: &AppState) {
                     open_chat(&s2, &chat);
                 })
             },
-            request_list: {
-                let s2 = state.clone();
-                Rc::new(move || request_friends_list(&s2))
-            },
             on_add_pending: {
                 let s2 = state.clone();
                 Rc::new(move |id| {

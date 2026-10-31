@@ -24,7 +24,6 @@ pub struct FriendsDeps {
     pub sidecar: Rc<Sidecar>,
     pub toast: Rc<dyn Fn(&str)>,
     pub on_open: Rc<dyn Fn(ChatInfo)>,
-    pub request_list: Rc<dyn Fn()>,
     pub on_add_pending: Rc<dyn Fn(u64)>,
 }
 
