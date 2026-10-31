@@ -17,9 +17,13 @@ export function createHistoryService(runtime: {
   remember: (chat: string, rows: HistoryMessage[]) => void;
   memoryTtl?: () => number;
   pauseMs?: number;
+  backfillPauseMs?: number;
+  onBackfillError?: (chat: string, error: unknown) => void;
 }) {
   const requests = new SerialQueue(runtime.pauseMs ?? 500);
   let generation = 0;
+  const backfillChats = new Set<string>();
+  let backfill: Promise<void> | null = null;
   const fresh = new Map<
     string,
     {
@@ -38,10 +42,14 @@ export function createHistoryService(runtime: {
     };
   };
 
-  async function fetchPage(chat: string, before?: HistoryCursor) {
+  async function fetchPage(
+    chat: string,
+    before?: HistoryCursor,
+    background = false,
+  ) {
     const session = runtime.getClient();
     const epoch = generation;
-    return await requests.run(async () => {
+    const result = await requests.run(async () => {
       const client = runtime.getClient();
       if (epoch !== generation || client !== session) {
         throw new Error("session_changed");
@@ -131,7 +139,7 @@ export function createHistoryService(runtime: {
           ids: rows.map((row) => String(row.id)),
           nextCursor,
           hasMore,
-        });
+        }, !before);
         runtime.remember(chat, all);
         if (!before) {
           fresh.set(chat, {
@@ -150,19 +158,76 @@ export function createHistoryService(runtime: {
       const ui = await runtime.forUi(
         persisted.filter((row) => ids.has(String(row.id))),
       );
-      void runtime.hydrate(ui, chat).catch((error) =>
-        console.error("[history media]", error)
-      );
+      if (!background) {
+        void runtime.hydrate(ui, chat).catch((error) =>
+          console.error("[history media]", error)
+        );
+      }
       return { messages: ui, nextCursor, hasMore, cached };
     });
+    if (!before && epoch === generation) scheduleBackfill(chat);
+    return result;
+  }
+
+  function scheduleBackfill(chat: string) {
+    backfillChats.add(chat);
+    if (backfill) return;
+    const epoch = generation;
+    backfill = runBackfill(epoch).finally(() => {
+      backfill = null;
+      // A new session can enqueue work while the previous worker is stopping.
+      const next = backfillChats.values().next().value;
+      if (next) scheduleBackfill(next);
+    });
+  }
+
+  async function runBackfill(epoch: number) {
+    while (backfillChats.size && epoch === generation) {
+      const chat = backfillChats.values().next().value!;
+      backfillChats.delete(chat);
+      try {
+        const entry = Object.entries(await runtime.history.gaps(chat))[0];
+        if (!entry || epoch !== generation) continue;
+        const [key, gap] = entry;
+        const pause = runtime.backfillPauseMs ?? 1000;
+        if (pause) await new Promise((resolve) => setTimeout(resolve, pause));
+        if (epoch !== generation) return;
+        const page = await fetchPage(chat, gap.before, true);
+        if (epoch !== generation) return;
+        // Wait for this page's serial media work as well, so background history
+        // cannot build an unbounded image/video download backlog.
+        await runtime.hydrate(page.messages, chat);
+        if (epoch !== generation) return;
+        const connected = gap.before.messageId === gap.targetId ||
+          page.messages.some((row) => String(row.id) === gap.targetId);
+        const done = connected || !page.hasMore || !page.nextCursor ||
+          page.nextCursor.messageId === gap.before.messageId;
+        await runtime.history.advanceGap(
+          chat,
+          key,
+          done ? null : page.nextCursor,
+        );
+        backfillChats.add(chat);
+      } catch (error) {
+        // Keep the disk checkpoint. Retry on a later open, not in a hot loop.
+        if (epoch === generation) {
+          if (runtime.onBackfillError) runtime.onBackfillError(chat, error);
+          else console.error("[history backfill]", chat, error);
+        }
+      }
+    }
   }
 
   return {
     fetchPage,
+    waitForBackfill: async () => {
+      while (backfill) await backfill;
+    },
     invalidate: (chat: string) => fresh.delete(chat),
     clear: () => {
       generation++;
       fresh.clear();
+      backfillChats.clear();
     },
   };
 }

@@ -5,6 +5,7 @@ import { Buffer } from "node:buffer";
 
 export type HistoryMessage = Record<string, unknown>;
 export type HistoryCursor = { messageId: string; deliveredTime: string };
+export type HistoryGap = { before: HistoryCursor; targetId: string };
 type Page = {
   ids: string[];
   nextCursor: HistoryCursor | null;
@@ -14,6 +15,8 @@ type HistoryFile = {
   at: number;
   messages: HistoryMessage[];
   pages: Record<string, Page>;
+  gaps: Record<string, HistoryGap>;
+  syncHead: string | null;
 };
 
 export function mergeMessages(
@@ -84,12 +87,20 @@ export class MessageHistory {
           at: file.at,
           messages: this.filter(file.messages ?? []),
           pages: file.pages ?? {},
+          gaps: file.gaps ?? {},
+          syncHead: file.syncHead ?? null,
         };
       }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
-    return { at: Date.now(), messages: [], pages: {} };
+    return {
+      at: Date.now(),
+      messages: [],
+      pages: {},
+      gaps: {},
+      syncHead: null,
+    };
   }
 
   async load(chat: string): Promise<HistoryMessage[]> {
@@ -110,14 +121,50 @@ export class MessageHistory {
     };
   }
 
+  async gaps(chat: string): Promise<Record<string, HistoryGap>> {
+    return (await this.read(chat)).gaps;
+  }
+
+  /** Advance only the job we actually processed; keep other outstanding gaps. */
+  advanceGap(
+    chat: string,
+    key: string,
+    before: HistoryCursor | null,
+  ): Promise<void> {
+    return this.writes.run(async () => {
+      const file = await this.read(chat);
+      if (!file.gaps[key]) return;
+      if (before) file.gaps[key].before = before;
+      else delete file.gaps[key];
+      await atomicWriteJson(join(this.directory, `${chat}.json`), file);
+    });
+  }
+
   save(
     chat: string,
     messages: HistoryMessage[],
     before?: HistoryCursor,
     page?: Page,
+    latest = false,
   ): Promise<HistoryMessage[]> {
     return this.writes.run(async () => {
       const file = await this.read(chat);
+      if (latest && messages.length && page) {
+        // On migration use the oldest saved message, not an arbitrary overlap:
+        // older versions could have saved disconnected ranges (1..100,131..150).
+        const target = file.syncHead ?? String(file.messages[0]?.id ?? "");
+        const sorted = mergeMessages([], messages);
+        const head = String(sorted.at(-1)?.id ?? "");
+        if (
+          target && page.hasMore && page.nextCursor &&
+          !messages.some((row) => String(row.id) === target)
+        ) {
+          // Retain the original cursor if an earlier attempt is already progressing.
+          const key = `${head}:${target}`;
+          file.gaps[key] ??= { before: page.nextCursor, targetId: target };
+        }
+        file.syncHead = head;
+      }
       file.messages = this.filter(mergeMessages(file.messages, messages));
       // Only reuse pages fetched from this exact boundary; never assume that
       // disconnected cached ranges form continuous history.

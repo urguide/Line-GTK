@@ -147,6 +147,7 @@ Deno.test("20-message pages preserve cursors, reuse disk after restart and stop 
     };
     const service = createHistoryService(runtime);
     const first = await service.fetchPage("chat");
+    await service.waitForBackfill();
     assertEquals(first.messages.length, 20);
     assertEquals(first.nextCursor?.messageId, String(base + 20n));
     assertEquals(first.hasMore, true);
@@ -170,7 +171,188 @@ Deno.test("20-message pages preserve cursors, reuse disk after restart and stop 
     const queued = restart.fetchPage("chat");
     restart.clear();
     await assertRejects(() => queued, Error, "session_changed");
+    await restart.waitForBackfill();
   } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("background fills 101..130 without scrolling, serially, and resumes after failure", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const history = new MessageHistory(
+      directory,
+      () => 86400000,
+      (rows) => rows,
+    );
+    const row = (id: number) => ({
+      id: String(id),
+      createdTime: id,
+      deliveredTime: id,
+      contentType: "IMAGE",
+    });
+    await history.save(
+      "chat",
+      Array.from({ length: 100 }, (_, i) => row(i + 1)),
+    );
+    const requests: number[] = [];
+    const hydrated: number[][] = [];
+    let fail = true;
+    let active = 0;
+    let peak = 0;
+    const client = {
+      base: {
+        talk: {
+          getMessageBoxes: () =>
+            Promise.resolve({
+              messageBoxes: [{
+                id: "chat",
+                lastDeliveredMessageId: { messageId: 150, deliveredTime: 150 },
+              }],
+            }),
+          getPreviousMessagesV2WithRequest: async (
+            { request }: {
+              request: {
+                messagesCount: number;
+                endMessageId: { messageId: number | bigint };
+              };
+            },
+          ) => {
+            assertEquals(request.messagesCount, 20);
+            const cursor = Number(request.endMessageId.messageId);
+            requests.push(cursor);
+            active++;
+            peak = Math.max(peak, active);
+            await Promise.resolve();
+            active--;
+            if (fail && cursor === 111) throw new Error("temporary failure");
+            const start = cursor === 150 ? 150 : cursor - 1;
+            return Array.from(
+              { length: Math.min(20, start) },
+              (_, i) => row(start - i),
+            );
+          },
+        },
+      },
+    } as unknown as Client;
+    const runtime = {
+      history,
+      getClient: () => client,
+      pauseMs: 0,
+      backfillPauseMs: 0,
+      summarize: (raw: unknown) =>
+        Promise.resolve(raw as Record<string, unknown>),
+      forUi: (rows: Record<string, unknown>[]) => Promise.resolve(rows),
+      hydrate: (rows: Record<string, unknown>[]) => {
+        hydrated.push(rows.map((r) => Number(r.id)));
+        return Promise.resolve();
+      },
+      remember: () => {},
+      onBackfillError: () => {},
+    };
+    const service = createHistoryService(runtime);
+    const initial = await service.fetchPage("chat");
+    assertEquals(initial.messages.length, 20);
+    assertEquals(initial.messages[0].id, "131");
+    await service.waitForBackfill();
+    assertEquals(requests, [150, 131, 111]);
+    assertEquals(
+      Object.values(await history.gaps("chat"))[0].before.messageId,
+      "111",
+    );
+    fail = false;
+    const restart = createHistoryService(runtime);
+    await restart.fetchPage("chat");
+    await restart.waitForBackfill();
+    assertEquals(
+      (await history.load("chat")).map((m) => Number(m.id)),
+      Array.from({ length: 150 }, (_, i) => i + 1),
+    );
+    assertEquals(await history.gaps("chat"), {});
+    assertEquals(peak, 1);
+    assertEquals(hydrated.some((page) => page.includes(101)), true);
+    // Migration deliberately bridges to the oldest known point (1), not just
+    // the first overlap (100), since old cache files may contain gaps already.
+    assertEquals(requests.filter((cursor) => cursor === 131).length, 1);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("background waits for page media and stops on session clear", async () => {
+  const directory = await Deno.makeTempDir();
+  const mediaStarted = Promise.withResolvers<void>();
+  const mediaFinished = Promise.withResolvers<void>();
+  try {
+    const history = new MessageHistory(
+      directory,
+      () => 86400000,
+      (rows) => rows,
+    );
+    await history.save("chat", [{ id: "100", createdTime: 100 }]);
+    const requested: number[] = [];
+    const client = {
+      base: {
+        talk: {
+          getMessageBoxes: () =>
+            Promise.resolve({
+              messageBoxes: [{
+                id: "chat",
+                lastDeliveredMessageId: { messageId: 150, deliveredTime: 150 },
+              }],
+            }),
+          getPreviousMessagesV2WithRequest: (
+            { request }: {
+              request: { endMessageId: { messageId: number | bigint } };
+            },
+          ) => {
+            const cursor = Number(request.endMessageId.messageId);
+            requested.push(cursor);
+            const start = cursor === 150 ? 150 : cursor - 1;
+            return Promise.resolve(
+              Array.from(
+                { length: 20 },
+                (_, i) => ({
+                  id: String(start - i),
+                  createdTime: start - i,
+                  deliveredTime: start - i,
+                }),
+              ),
+            );
+          },
+        },
+      },
+    } as unknown as Client;
+    const service = createHistoryService({
+      history,
+      getClient: () => client,
+      pauseMs: 0,
+      backfillPauseMs: 0,
+      summarize: (raw) => Promise.resolve(raw as Record<string, unknown>),
+      forUi: (rows) => Promise.resolve(rows),
+      remember: () => {},
+      hydrate: async (rows) => {
+        if (rows.some((row) => row.id === "130")) {
+          mediaStarted.resolve();
+          await mediaFinished.promise;
+        }
+      },
+    });
+    const first = await service.fetchPage("chat");
+    assertEquals(first.messages.length, 20);
+    await mediaStarted.promise;
+    assertEquals(requested, [150, 131]);
+    service.clear();
+    mediaFinished.resolve();
+    await service.waitForBackfill();
+    assertEquals(requested, [150, 131]);
+    // Keep the checkpoint until media has finished in the same session.
+    assertEquals(
+      Object.values(await history.gaps("chat"))[0].before.messageId,
+      "131",
+    );
+  } finally {
+    mediaFinished.resolve();
     await Deno.remove(directory, { recursive: true });
   }
 });
