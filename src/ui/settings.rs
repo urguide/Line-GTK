@@ -812,6 +812,7 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         let cfg = deps.config.clone();
         let data_dir = deps.data_dir.clone();
         let toast = deps.toast.clone();
+        let sidecar = deps.sidecar.clone();
         retention_row.connect_selected_notify(move |row| {
             let retention = match row.selected() {
                 1 => "day",
@@ -822,6 +823,10 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
             };
             cfg.borrow_mut().cache_retention = retention.into();
             cfg.borrow().save(&data_dir);
+            if let Err(error) = sidecar.set_cache_retention(retention) {
+                toast(&error.to_string());
+                return;
+            }
             toast(&i18n::tf("cache_retention_saved", &[("mode", retention)]));
         });
     }

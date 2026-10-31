@@ -140,7 +140,13 @@ impl Ipc {
         Ok(result)
     }
     fn sticker_catalog(&self, p: &Value, generation: u64) -> Result<Value> {
-        let owned = self.call("bridge_owned_stickers", json!({}), generation);
+        let owned = if p["owned"].is_null() {
+            self.call("bridge_owned_stickers", json!({}), generation)
+        } else if p["owned"].is_array() {
+            Ok(json!({"productList":p["owned"]}))
+        } else {
+            Ok(p["owned"].clone())
+        };
         self.active(generation)?;
         let result = line_gtk_core::stickers::load(
             owned,

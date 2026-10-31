@@ -84,6 +84,7 @@ enum Work {
 }
 
 pub struct Engine<T: Transport> {
+    policy: crate::cache_policy::CachePolicy,
     store: Store,
     transport: T,
     generation: Arc<AtomicU64>,
@@ -107,6 +108,7 @@ impl<T: Transport> Engine<T> {
         legacy: std::path::PathBuf,
     ) -> Self {
         Self {
+            policy: crate::cache_policy::CachePolicy::default(),
             store,
             transport,
             generation,
@@ -152,7 +154,7 @@ impl<T: Transport> Engine<T> {
         if let Some(cursor) = before {
             cursor.validate()?;
         }
-        if let Some(page) = self.store.page(chat, before, 20 * 60_000)? {
+        if let Some(page) = self.store.page(chat, before, self.policy.messages)? {
             return Ok(page);
         }
         self.pace(self.last_request, self.page_pause, generation)?;
@@ -269,7 +271,9 @@ impl<T: Transport> Engine<T> {
                     );
                     if cached_kind
                         && !params["force"].as_bool().unwrap_or(false)
-                        && let Some(mut value) = self.store.catalog(&method, 30 * 60_000)?
+                        && let Some(mut value) = self
+                            .store
+                            .catalog(&method, self.policy.catalog_ttl(&method))?
                         && !value["partial"].as_bool().unwrap_or(false)
                     {
                         self.store.decorate_chats(&mut value)?;
@@ -278,14 +282,18 @@ impl<T: Transport> Engine<T> {
                     params["account"] = json!(self.account);
                     if matches!(method.as_str(), "list_chats" | "list_friends") {
                         params["previous"] = json!({
-                            "chats":self.store.catalog("list_chats",i64::MAX)?.unwrap_or_default()["chats"],
-                            "friends":self.store.catalog("list_friends",i64::MAX)?.unwrap_or_default()["friends"],
+                            "chats":self.store.stale_catalog("list_chats",self.policy.disk_chats)?.unwrap_or_default()["chats"],
+                            "friends":self.store.stale_catalog("list_friends",self.policy.disk_chats)?.unwrap_or_default()["friends"],
                         });
                     }
                     if method == "list_stickers" {
+                        params["owned"] = self
+                            .store
+                            .catalog("owned_stickers", self.policy.owned_stickers)?
+                            .unwrap_or_default();
                         params["previous"] = self
                             .store
-                            .catalog("list_stickers", i64::MAX)?
+                            .stale_catalog("list_stickers", self.policy.disk_chats)?
                             .unwrap_or_default();
                         params["recent"] = self
                             .store
@@ -297,15 +305,17 @@ impl<T: Transport> Engine<T> {
                         if !explicit.is_empty() {
                             params["version"] = json!(explicit);
                         } else {
-                            let chooser = self.store.catalog("list_stickers", 30 * 60_000)?;
-                            let cached =
-                                self.store
-                                    .catalog("owned_stickers", 86_400_000)?
-                                    .or_else(|| {
-                                        chooser
-                                            .filter(|v| !v["partial"].as_bool().unwrap_or(false))
-                                            .and_then(|v| v.get("products").cloned())
-                                    });
+                            let chooser = self
+                                .store
+                                .catalog("list_stickers", self.policy.owned_stickers)?;
+                            let cached = self
+                                .store
+                                .catalog("owned_stickers", self.policy.owned_stickers)?
+                                .or_else(|| {
+                                    chooser
+                                        .filter(|v| !v["partial"].as_bool().unwrap_or(false))
+                                        .and_then(|v| v.get("products").cloned())
+                                });
                             let owned = if let Some(owned) = cached {
                                 owned
                             } else {
@@ -353,6 +363,14 @@ impl<T: Transport> Engine<T> {
                     if cached_kind {
                         self.store.decorate_chats(&mut value)?;
                         self.store.save_catalog(&method, &value)?;
+                        if method == "list_stickers"
+                            && !value["partial"].as_bool().unwrap_or(false)
+                            && value["products"].is_array()
+                            && params["owned"].is_null()
+                        {
+                            self.store
+                                .save_catalog("owned_stickers", &value["products"])?;
+                        }
                     }
                     if method.starts_with("send_") {
                         if let Some(raw) = value.get("rawMessage") {
@@ -426,7 +444,10 @@ impl<T: Transport> Engine<T> {
                 self.response(id, result, generation);
             }
             Command::Stop => return Ok(false),
-            Command::Retention(mode) => self.store.set_retention(&mode),
+            Command::Retention(mode) => {
+                self.policy = crate::cache_policy::CachePolicy::for_mode(&mode);
+                self.store.set_retention(&mode);
+            }
             Command::Session {
                 account,
                 generation,

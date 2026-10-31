@@ -3,16 +3,9 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-const DAY_MS: u64 = 86_400_000;
-
 /// None means never expire, matching the existing Forever setting.
 pub fn animation_miss_ttl(mode: &str) -> Option<u64> {
-    match mode {
-        "day" => Some(DAY_MS),
-        "month" => Some(30 * DAY_MS),
-        "forever" => None,
-        _ => Some(7 * DAY_MS),
-    }
+    crate::cache_policy::CachePolicy::for_mode(mode).animation_miss
 }
 
 pub fn confirms_absence(status: u16) -> bool {

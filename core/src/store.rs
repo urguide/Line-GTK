@@ -47,6 +47,7 @@ pub struct Store {
     db: Connection,
     account: String,
     ttl_ms: i64,
+    clock: std::sync::Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
 fn now() -> i64 {
@@ -80,6 +81,13 @@ pub fn merge(old: Value, incoming: &Value) -> Value {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with_clock(path, std::sync::Arc::new(now))
+    }
+
+    pub fn open_with_clock(
+        path: &Path,
+        clock: std::sync::Arc<dyn Fn() -> i64 + Send + Sync>,
+    ) -> Result<Self> {
         let db = Connection::open(path)?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         db.execute_batch(
@@ -103,10 +111,23 @@ impl Store {
              CREATE TABLE IF NOT EXISTS migrations (path TEXT PRIMARY KEY, account TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS catalogs (account TEXT NOT NULL,kind TEXT NOT NULL,updated INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(account,kind));"
         )?;
+        // Freshness invalidation is independent from disk-retention age.
+        let has_invalidated = db
+            .prepare("PRAGMA table_info(catalogs)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "invalidated");
+        if !has_invalidated {
+            db.execute_batch(
+                "ALTER TABLE catalogs ADD COLUMN invalidated INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
         Ok(Self {
             db,
             account: String::new(),
-            ttl_ms: 360 * 86_400_000,
+            ttl_ms: crate::cache_policy::CachePolicy::default().disk_messages,
+            clock,
         })
     }
 
@@ -115,11 +136,19 @@ impl Store {
     }
 
     pub fn catalog(&self, kind: &str, ttl: i64) -> Result<Option<Value>> {
+        self.read_catalog(kind, ttl, ttl == i64::MAX)
+    }
+
+    pub fn stale_catalog(&self, kind: &str, ttl: i64) -> Result<Option<Value>> {
+        self.read_catalog(kind, ttl, true)
+    }
+
+    fn read_catalog(&self, kind: &str, ttl: i64, allow_invalidated: bool) -> Result<Option<Value>> {
         let body: Option<String> = self
             .db
             .query_row(
-                "SELECT body FROM catalogs WHERE account=?1 AND kind=?2 AND updated>=?3",
-                params![self.account, kind, now().saturating_sub(ttl)],
+                "SELECT body FROM catalogs WHERE account=?1 AND kind=?2 AND (?3 OR updated>?4) AND (?5 OR invalidated=0)",
+                params![self.account, kind, ttl==i64::MAX, self.now().saturating_sub(ttl), allow_invalidated],
                 |r| r.get(0),
             )
             .optional()?;
@@ -129,15 +158,15 @@ impl Store {
 
     pub fn save_catalog(&self, kind: &str, body: &Value) -> Result<()> {
         self.db.execute(
-            "INSERT OR REPLACE INTO catalogs VALUES(?1,?2,?3,?4)",
-            params![self.account, kind, now(), body.to_string()],
+            "INSERT OR REPLACE INTO catalogs(account,kind,updated,body) VALUES(?1,?2,?3,?4)",
+            params![self.account, kind, self.now(), body.to_string()],
         )?;
         Ok(())
     }
 
     pub fn invalidate_catalogs(&self) -> Result<()> {
         self.db.execute(
-            "UPDATE catalogs SET updated=0 WHERE account=?1 AND kind!='recent_stickers'",
+            "UPDATE catalogs SET invalidated=1 WHERE account=?1 AND kind!='recent_stickers'",
             params![self.account],
         )?;
         Ok(())
@@ -154,10 +183,11 @@ impl Store {
             crate::message::string(&s["stickerId"]) != sticker
                 || crate::message::string(&s["packageId"]) != package
         });
+        let now = self.now();
         let tx = self.db.transaction()?;
         tx.execute(
-            "INSERT OR REPLACE INTO catalogs VALUES(?1,'recent_stickers',?2,?3)",
-            params![self.account, now(), serde_json::to_string(&recent)?],
+            "INSERT OR REPLACE INTO catalogs(account,kind,updated,body) VALUES(?1,'recent_stickers',?2,?3)",
+            params![self.account, now, serde_json::to_string(&recent)?],
         )?;
         tx.execute(
             "DELETE FROM catalogs WHERE account=?1 AND kind IN ('owned_stickers','list_stickers')",
@@ -168,13 +198,7 @@ impl Store {
     }
 
     pub fn set_retention(&mut self, mode: &str) {
-        self.ttl_ms = match mode {
-            "day" => 86_400_000,
-            "week" => 7 * 86_400_000,
-            "month" => 30 * 86_400_000,
-            "forever" => i64::MAX,
-            _ => 360 * 86_400_000,
-        };
+        self.ttl_ms = crate::cache_policy::CachePolicy::for_mode(mode).disk_messages;
     }
 
     pub fn decorate_chats(&self, value: &mut Value) -> Result<()> {
@@ -197,7 +221,11 @@ impl Store {
     }
 
     fn cutoff(&self) -> i64 {
-        now().saturating_sub(self.ttl_ms)
+        self.now().saturating_sub(self.ttl_ms)
+    }
+
+    fn now(&self) -> i64 {
+        (self.clock)()
     }
 
     pub fn message(&self, chat: &str, message_id: &str) -> Result<Option<Value>> {
@@ -214,6 +242,7 @@ impl Store {
     }
 
     pub fn save_messages(&mut self, chat: &str, messages: &[Value]) -> Result<()> {
+        let now = self.now();
         let tx = self.db.savepoint()?;
         for row in messages {
             let message_id = id(row);
@@ -242,15 +271,15 @@ impl Store {
                 row,
             );
             tx.execute("INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(account,chat,id) DO UPDATE SET created=excluded.created,updated=excluded.updated,body=excluded.body",
-                params![self.account, chat, message_id, merged["createdTime"].as_i64().unwrap_or(0), now(), merged.to_string()])?;
+                params![self.account, chat, message_id, merged["createdTime"].as_i64().unwrap_or(0), now, merged.to_string()])?;
         }
         tx.execute(
             "DELETE FROM pages WHERE account=?1 AND updated<?2",
-            params![self.account, now().saturating_sub(self.ttl_ms)],
+            params![self.account, now.saturating_sub(self.ttl_ms)],
         )?;
         tx.execute(
             "DELETE FROM messages WHERE account=?1 AND updated<?2",
-            params![self.account, now().saturating_sub(self.ttl_ms)],
+            params![self.account, now.saturating_sub(self.ttl_ms)],
         )?;
         tx.commit()?;
         Ok(())
@@ -261,9 +290,9 @@ impl Store {
         let cutoff = if before.is_some() {
             self.cutoff()
         } else {
-            now().saturating_sub(fresh_ms)
+            self.now().saturating_sub(fresh_ms)
         };
-        let body: Option<String> = self.db.query_row("SELECT body FROM pages WHERE account=?1 AND chat=?2 AND boundary=?3 AND updated>=?4", params![self.account, chat, boundary, cutoff], |r| r.get(0)).optional()?;
+        let body: Option<String> = self.db.query_row("SELECT body FROM pages WHERE account=?1 AND chat=?2 AND boundary=?3 AND (updated>?4 OR (?5 AND updated=?4))", params![self.account, chat, boundary, cutoff, before.is_some()||fresh_ms==i64::MAX], |r| r.get(0)).optional()?;
         let Some(body) = body else { return Ok(None) };
         let value: Value = serde_json::from_str(&body)?;
         let mut page = Page {
@@ -328,7 +357,7 @@ impl Store {
                 self.account,
                 chat,
                 before.map(|c| c.message_id.as_str()).unwrap_or("latest"),
-                now(),
+                self.now(),
                 body.to_string()
             ],
         )?;
@@ -476,7 +505,7 @@ impl Store {
             for (boundary, page) in file["pages"].as_object().into_iter().flatten() {
                 self.db.execute(
                     "INSERT OR IGNORE INTO pages VALUES(?1,?2,?3,?4,?5)",
-                    params![self.account, chat, boundary, now(), page.to_string()],
+                    params![self.account, chat, boundary, self.now(), page.to_string()],
                 )?;
             }
             for (key, gap) in file["gaps"].as_object().into_iter().flatten() {
@@ -512,6 +541,7 @@ impl Store {
             return Ok(());
         }
         let key = path.to_string_lossy();
+        let now = self.now();
         let tx = self.db.transaction()?;
         let claimed: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM migrations WHERE path=?1)",
@@ -555,8 +585,8 @@ impl Store {
         });
         rows.truncate(200);
         tx.execute(
-            "INSERT OR REPLACE INTO catalogs VALUES(?1,'recent_stickers',?2,?3)",
-            params![self.account, now(), serde_json::to_string(&rows)?],
+            "INSERT OR REPLACE INTO catalogs(account,kind,updated,body) VALUES(?1,'recent_stickers',?2,?3)",
+            params![self.account, now, serde_json::to_string(&rows)?],
         )?;
         tx.execute(
             "INSERT INTO migrations VALUES(?1,?2)",

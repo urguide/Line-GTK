@@ -90,6 +90,7 @@ impl Sidecar {
             std::fs::write(&migration_marker, b"1")?;
         }
         let cfg = crate::config::AppConfig::load(&self.data_dir);
+        self.set_cache_retention(&cfg.cache_retention)?;
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
         let (mut command, runtime) = if compiled.is_file() {
@@ -246,11 +247,9 @@ impl Sidecar {
         let body = params.as_ref().cloned().unwrap_or_else(|| json!({}));
         let chat = body["chatMid"].as_str().unwrap_or_default().to_owned();
         use line_gtk_core::sync::Command as CoreCommand;
+        let cfg = crate::config::AppConfig::load(&self.data_dir);
+        self.set_cache_retention(&cfg.cache_retention)?;
         if matches!(method, "fetch_messages" | "download_media") {
-            let cfg = crate::config::AppConfig::load(&self.data_dir);
-            self.core
-                .commands
-                .send(CoreCommand::Retention(cfg.cache_retention))?;
             let command = if method == "fetch_messages" {
                 CoreCommand::Fetch {
                     id,
@@ -327,6 +326,13 @@ impl Sidecar {
 
     pub fn login_qr(&self) -> Result<u64> {
         self.request("login_qr", None)
+    }
+
+    pub fn set_cache_retention(&self, mode: &str) -> Result<()> {
+        self.core
+            .commands
+            .send(line_gtk_core::sync::Command::Retention(mode.to_owned()))?;
+        Ok(())
     }
 
     pub fn list_chats(&self) -> Result<u64> {

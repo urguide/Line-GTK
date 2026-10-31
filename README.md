@@ -52,6 +52,21 @@ version 1 fallback if lookup is unavailable). Explicit versions take precedence.
 Ownership rejection removes the matching recent sticker and deletes ownership
 snapshots atomically for that account, preventing stale catalog fallback from
 restoring rejected ownership. Failed sends never persist a successful message.
+
+All retention modes share `core/src/cache_policy.rs`; changes in Settings are
+sent immediately to the Rust worker and rechecked on subsequent requests.
+
+| Mode | Latest message page | Chat list | Friends | Owned sticker packs | Disk chats/messages |
+| --- | --- | --- | --- | --- | --- |
+| Smart | 20 min | 30 min | 30 min | 1 day | 360 days |
+| Day | 15 min | 30 min | 30 min | 1 day | 1 day |
+| Week | 30 min | 60 min | 120 min | 7 days | 7 days |
+| Month | 60 min | 120 min | 360 min | 30 days | 30 days |
+| Forever | 120 min | 360 min | 360 min | 7 days | Unlimited |
+
+Freshness expiry triggers a refresh; disk retention controls how long saved
+history and stale list fallbacks remain usable. Invalidating freshness does not
+reset a catalog's disk age. SQLite upgrades preserve existing catalog rows.
 Attachment progress is emitted by Rust at preparation, upload and local-save
 stages. Every upload operation emits one terminal success/failure event before
 its response, including early validation failures, so the UI can close progress.
