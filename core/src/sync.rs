@@ -473,13 +473,14 @@ impl<T: Transport> Engine<T> {
                             params["messageId"].as_str().unwrap_or_default(),
                         )?;
                     }
-                    if method == "clear_cache"
-                        && matches!(params["kind"].as_str(), Some("all" | "messages"))
-                    {
-                        self.background.clear();
-                        self.queued_media.clear();
-                        self.queued_gaps.clear();
-                        self.store.clear()?;
+                    if method == "clear_cache" {
+                        let kind = params["kind"].as_str().unwrap_or("all");
+                        if matches!(kind, "all" | "messages") {
+                            self.background.clear();
+                            self.queued_media.clear();
+                            self.queued_gaps.clear();
+                        }
+                        self.store.clear_scope(kind)?;
                     }
                     Ok(value)
                 })();

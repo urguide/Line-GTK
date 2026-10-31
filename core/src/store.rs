@@ -514,10 +514,25 @@ impl Store {
     }
 
     pub fn clear(&mut self) -> Result<()> {
+        self.clear_scope("messages")
+    }
+
+    /// Explicit deletion differs from freshness invalidation: stale fallback
+    /// must not retain user-cleared chat/contact rows. Keep migration claims and
+    /// withdrawal tombstones so a restart cannot restore cleared history.
+    pub fn clear_scope(&mut self, kind: &str) -> Result<()> {
         let tx = self.db.transaction()?;
-        for table in ["messages", "pages", "gaps", "heads"] {
+        if matches!(kind, "all" | "messages") {
+            for table in ["messages", "pages", "gaps", "heads"] {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE account=?1"),
+                    params![self.account],
+                )?;
+            }
+        }
+        if matches!(kind, "all" | "chats") {
             tx.execute(
-                &format!("DELETE FROM {table} WHERE account=?1"),
+                "DELETE FROM catalogs WHERE account=?1 AND kind IN ('list_chats','list_friends')",
                 params![self.account],
             )?;
         }

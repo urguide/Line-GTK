@@ -67,6 +67,11 @@ sent immediately to the Rust worker and rechecked on subsequent requests.
 Freshness expiry triggers a refresh; disk retention controls how long saved
 history and stale list fallbacks remain usable. Invalidating freshness does not
 reset a catalog's disk age. SQLite upgrades preserve existing catalog rows.
+Clearing Chats deletes the current account's chat and friend catalog rows,
+including stale fallbacks; clearing All also removes its messages/pages/gaps.
+Catalogs from other accounts remain intact. A failed refresh or restart cannot
+resurrect the deleted lists from SQLite. Migration claims and withdrawal markers
+remain so previously imported or unsent messages are not restored by clearing.
 Read receipts are best-effort Rust operations: missing IDs, no linked session,
 or a rejected API call return `marked: false` inside a successful response
 envelope, without a UI error toast. Only an acknowledged receipt clears that
