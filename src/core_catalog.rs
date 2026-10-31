@@ -408,12 +408,10 @@ impl Ipc {
             "send_postback" => line_gtk_core::postback::send(&p, |method, args| {
                 self.call(method, args, generation)
             }),
-            "add_friend" => {
-                let row = self.call("bridge_find_contact", p.clone(), generation)?;
-                p["mid"] = row["mid"].clone();
-                self.call("bridge_friend_request", p, generation)?;
-                Ok(row)
-            }
+            "add_friend" => line_gtk_core::friends::add(
+                p["userid"].as_str().unwrap_or_default(),
+                |method, args| self.call(method, args, generation),
+            ),
             "clear_cache" => {
                 let kind = p["kind"].as_str().unwrap_or("all");
                 for name in ["media", "stickers", "avatars"] {

@@ -25,6 +25,7 @@ pub struct FriendsDeps {
     pub toast: Rc<dyn Fn(&str)>,
     pub on_open: Rc<dyn Fn(ChatInfo)>,
     pub request_list: Rc<dyn Fn()>,
+    pub on_add_pending: Rc<dyn Fn(u64)>,
 }
 
 const THAI_CONSONANTS: &str = "กขฃคฅฆงจฉชซฌญฎฏฐฑฒณดตถทธนบปผฝพฟภมยรลวศษสหฬอฮ";
@@ -137,7 +138,7 @@ pub fn open_friends(parent: &impl IsA<gtk::Window>, deps: FriendsDeps) -> Friend
         let sidecar = deps.sidecar.clone();
         let toast = deps.toast.clone();
         let id_entry2 = id_entry.clone();
-        let request_list = deps.request_list.clone();
+        let on_add_pending = deps.on_add_pending.clone();
         add_btn.connect_clicked(move |_| {
             let userid = id_entry2.text().trim().to_string();
             if userid.is_empty() {
@@ -145,10 +146,9 @@ pub fn open_friends(parent: &impl IsA<gtk::Window>, deps: FriendsDeps) -> Friend
                 return;
             }
             match sidecar.add_friend(&userid) {
-                Ok(_) => {
-                    toast(&i18n::t("friend_ok"));
+                Ok(id) => {
+                    on_add_pending(id);
                     id_entry2.set_text("");
-                    request_list();
                 }
                 Err(e) => toast(&i18n::tf("friend_failed", &[("error", &e.to_string())])),
             }

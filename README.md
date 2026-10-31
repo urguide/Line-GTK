@@ -71,6 +71,11 @@ Read receipts are best-effort Rust operations: missing IDs, no linked session,
 or a rejected API call return `marked: false` inside a successful response
 envelope, without a UI error toast. Only an acknowledged receipt clears that
 chat's SQLite unread count, preserving other chats, accounts and cache expiry.
+Friend IDs are normalized in Rust (trim whitespace and remove the leading `@`).
+A successful lookup is retained in the account's chat/friend catalogs even when
+the friend-request API rejects an existing friend or is unavailable; the result
+separately reports `requestSent`. Missing users remain errors, and the UI waits
+for the lookup result before showing success and refreshing the friend list.
 Attachment progress is emitted by Rust at preparation, upload and local-save
 stages. Every upload operation emits one terminal success/failure event before
 its response, including early validation failures, so the UI can close progress.

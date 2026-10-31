@@ -461,7 +461,10 @@ impl<T: Transport> Engine<T> {
                             self.store.save_catalog("recent_stickers", &json!(recent))?;
                         }
                     }
-                    if matches!(method.as_str(), "add_friend" | "mute_chat" | "clear_cache") {
+                    if method == "add_friend" {
+                        self.store.remember_contact(&value)?;
+                    }
+                    if matches!(method.as_str(), "mute_chat" | "clear_cache") {
                         self.store.invalidate_catalogs()?;
                     }
                     if method == "unsend_message" {

@@ -1497,6 +1497,12 @@ fn open_friends_popup(state: &AppState) {
                 let s2 = state.clone();
                 Rc::new(move || request_friends_list(&s2))
             },
+            on_add_pending: {
+                let s2 = state.clone();
+                Rc::new(move |id| {
+                    s2.pending.borrow_mut().insert(id, Pending::AddFriend);
+                })
+            },
         },
     );
     {

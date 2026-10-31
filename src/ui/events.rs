@@ -574,6 +574,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 return;
             }
             match pending {
+                Some(Pending::AddFriend) => {
+                    toast(state, &crate::i18n::t("friend_ok"));
+                    request_friends_list(state);
+                }
                 Some(Pending::Unsend {
                     chat_mid,
                     message_id,

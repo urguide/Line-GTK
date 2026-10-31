@@ -203,6 +203,51 @@ impl Store {
         Ok(())
     }
 
+    /// Preserve a successful ID lookup for the next list refresh/offline fallback.
+    /// Do not reset existing unread counts, mute state, avatars or timestamps.
+    pub fn remember_contact(&mut self, contact: &Value) -> Result<()> {
+        let mid = contact["mid"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .context("user_not_found")?;
+        let now = self.now();
+        let tx = self.db.transaction()?;
+        for (kind, key) in [("list_friends", "friends"), ("list_chats", "chats")] {
+            let body: Option<String> = tx
+                .query_row(
+                    "SELECT body FROM catalogs WHERE account=?1 AND kind=?2",
+                    params![self.account, kind],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let existing = body.is_some();
+            let mut catalog: Value = body
+                .map(|body| serde_json::from_str(&body))
+                .transpose()?
+                .unwrap_or_else(|| json!({key:[],"partial":true}));
+            let rows = catalog[key]
+                .as_array_mut()
+                .context("invalid contact catalog")?;
+            let mut row=rows.iter().find(|row|row["mid"]==mid).cloned().unwrap_or_else(||json!({"mid":mid,"kind":"dm","lastActivity":0,"unread":0,"preview":"","muted":false}));
+            row["name"] = contact["displayName"].clone();
+            if !contact["picturePath"].is_null() {
+                row["picturePath"] = contact["picturePath"].clone();
+            }
+            rows.retain(|row| row["mid"] != mid);
+            rows.push(row);
+            if existing {
+                tx.execute(
+                    "UPDATE catalogs SET body=?1,invalidated=1 WHERE account=?2 AND kind=?3",
+                    params![catalog.to_string(), self.account, kind],
+                )?;
+            } else {
+                tx.execute("INSERT INTO catalogs(account,kind,updated,body,invalidated) VALUES(?1,?2,?3,?4,1)",params![self.account,kind,now,catalog.to_string()])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Remove the rejected recent and all ownership snapshots atomically. Delete
     /// instead of merely expiring: stale catalog fallback must not restore it.
     pub fn reject_sticker(&mut self, sticker: &str, package: &str) -> Result<()> {

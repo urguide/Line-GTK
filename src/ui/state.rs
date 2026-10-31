@@ -174,6 +174,7 @@ pub(super) enum Pending {
     Login,
     ListChats,
     ListFriends,
+    AddFriend,
     FetchMessages {
         chat_mid: String,
         generation: u64,

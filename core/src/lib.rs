@@ -2,6 +2,7 @@
 pub mod attachments;
 pub mod cache_policy;
 pub mod catalog;
+pub mod friends;
 pub mod message;
 pub mod postback;
 pub mod sticker_cache;
