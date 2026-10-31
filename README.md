@@ -9,6 +9,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends
+- [x] Right-click Reply with a quoted-message preview
 - [x] Unsend your messages; sync unsends from other devices and participants
 - [x] Photos, video, voice messages, files
 - [x] Paste and drag-and-drop attachments
@@ -61,6 +62,14 @@ cd Line-GTK
 cargo build --release
 ./target/release/line-gtk
 ```
+
+## Reply to messages
+
+Right-click a message or open its **⋮** menu and choose **Reply**. The original
+message appears above the text input; type your reply and press Enter or Send.
+Replies use LINE's native message relation, so other LINE clients can display
+the quote too. Click **×** or press Escape to cancel. Switching chats clears the
+reply target. Quoted messages outside the loaded history show a placeholder.
 
 ## Unsend messages
 

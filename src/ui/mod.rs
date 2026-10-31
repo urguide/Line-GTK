@@ -126,6 +126,11 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         message_scroll: shell.message_scroll,
         composer: shell.composer,
         composer_row: shell.composer_row,
+        reply_bar: shell.reply_bar,
+        reply_label: shell.reply_label,
+        reply_cancel: shell.reply_cancel,
+        reply_target: Rc::new(RefCell::new(None)),
+        message_index: Rc::new(RefCell::new(HashMap::new())),
         conversation: shell.conversation,
         send_btn: shell.send_btn,
         status: shell.status,
@@ -936,7 +941,14 @@ fn send_current(state: &AppState) {
         toast(state, &crate::i18n::t("select_chat_first"));
         return;
     };
-    match state.sidecar.send_message(&chat_mid, &text) {
+    let reply = state.reply_target.borrow().clone().filter(|target| {
+        target.chat_mid == chat_mid && !state.unsent_msg_ids.borrow().contains(&target.message.id)
+    });
+    let related_message_id = reply.as_ref().map(|target| target.message.id.clone());
+    match state
+        .sidecar
+        .send_message(&chat_mid, &text, related_message_id.as_deref())
+    {
         Ok(id) => {
             begin_optimistic_send(
                 state,
@@ -944,7 +956,8 @@ fn send_current(state: &AppState) {
                 &chat_mid,
                 MessageInfo {
                     id: String::new(),
-                    text,
+                    text: text.clone(),
+                    related_message_id,
                     from: String::new(),
                     to: chat_mid.clone(),
                     mine: true,
@@ -958,6 +971,10 @@ fn send_current(state: &AppState) {
                     flex: None,
                 },
             );
+            if let Some(Pending::Send { draft, .. }) = state.pending.borrow_mut().get_mut(&id) {
+                *draft = Some(Box::new(TextDraft { text, reply }));
+            }
+            clear_reply(state);
             state.composer.set_text("");
             dismiss_new_marker(state);
             pin_messages_to_latest(state);
@@ -977,6 +994,7 @@ fn now_ms() -> i64 {
 }
 
 fn remove_pending_placeholder(state: &AppState, placeholder_id: &str) {
+    state.message_index.borrow_mut().remove(placeholder_id);
     state.message_rows.borrow_mut().remove(placeholder_id);
     if let Some(row) = state.pending_rows.borrow_mut().remove(placeholder_id) {
         state.message_list.remove(&row);
@@ -1006,12 +1024,17 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
         Pending::Send {
             chat_mid: chat_mid.into(),
             placeholder_id,
+            draft: None,
         },
     );
 }
 
 fn apply_ui_language(state: &AppState) {
     crate::i18n::set_lang(&state.repo_root, &state.config.borrow().language);
+    state
+        .reply_cancel
+        .set_tooltip_text(Some(&crate::i18n::t("cancel_reply")));
+    refresh_reply_preview(state);
     state.side_title.set_text(&crate::i18n::t("chats"));
     state
         .composer
@@ -1192,6 +1215,11 @@ fn wire_drop_attachments(state: &AppState) {
 
 fn wire_actions(state: &AppState) {
     let s = state.clone();
+    state.reply_cancel.connect_clicked(move |_| {
+        clear_reply(&s);
+        s.composer.grab_focus();
+    });
+    let s = state.clone();
     state.composer.connect_activate(move |_| send_current(&s));
 
     let s = state.clone();
@@ -1224,6 +1252,7 @@ fn wire_actions(state: &AppState) {
     let esc = gtk::EventControllerKey::new();
     esc.connect_key_pressed(move |_, key, _, _| {
         if key == gdk::Key::Escape {
+            clear_reply(&s);
             dismiss_new_marker(&s);
             return glib::Propagation::Stop;
         }
@@ -1236,6 +1265,7 @@ fn wire_actions(state: &AppState) {
     esc_win.set_propagation_phase(gtk::PropagationPhase::Capture);
     esc_win.connect_key_pressed(move |_, key, _, _| {
         if key == gdk::Key::Escape && state_chat_open(&s) {
+            clear_reply(&s);
             dismiss_new_marker(&s);
             return glib::Propagation::Stop;
         }
@@ -1507,6 +1537,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     state.current_chat.borrow_mut().replace(chat.mid.clone());
+    clear_reply(state);
     hide_upload_progress(state);
     {
         let mut cfg = state.config.borrow_mut();

@@ -600,6 +600,7 @@ export function createCommandService(runtime: CommandRuntime) {
     id: number | string | null,
     chatMid: string,
     text: string,
+    relatedMessageId?: string,
   ) {
     const client = runtime.getClient();
     if (!client) {
@@ -608,6 +609,10 @@ export function createCommandService(runtime: CommandRuntime) {
     }
     if (!text.trim()) {
       fail(id, "empty_message");
+      return;
+    }
+    if (relatedMessageId !== undefined && !/^\d+$/.test(relatedMessageId)) {
+      fail(id, "invalid_reply_target");
       return;
     }
 
@@ -620,6 +625,7 @@ export function createCommandService(runtime: CommandRuntime) {
       sent = await client.base.talk.sendMessage({
         to: chatMid,
         text,
+        relatedMessageId,
         e2ee: true,
       }) as unknown as typeof sent;
     } catch (e) {
@@ -628,6 +634,7 @@ export function createCommandService(runtime: CommandRuntime) {
         sent = await client.base.talk.sendMessage({
           to: chatMid,
           text,
+          relatedMessageId,
           e2ee: false,
         }) as unknown as typeof sent;
       } catch (fallbackError) {
@@ -644,6 +651,7 @@ export function createCommandService(runtime: CommandRuntime) {
     msgCache.delete(chatMid);
     runtime.setChatCache(null);
     const message = sentMessagePayload(sent, chatMid, text);
+    message.relatedMessageId = relatedMessageId ?? null;
     touchChatPreviewFromMessage(message);
     ok(id, { message });
   }

@@ -81,6 +81,8 @@ pub struct MessageInfo {
     pub id: String,
     #[serde(default)]
     pub text: String,
+    #[serde(rename = "relatedMessageId", default)]
+    pub related_message_id: Option<String>,
     #[serde(default)]
     pub from: String,
     #[serde(default)]
@@ -235,6 +237,19 @@ mod tests {
         assert_eq!(message.created_time, 0);
         assert!(!message.mine);
         assert!(message.image_path.is_none());
+        assert!(message.related_message_id.is_none());
+    }
+
+    #[test]
+    fn parses_reply_relation_without_losing_large_message_ids() {
+        let message: MessageInfo = serde_json::from_str(
+            r#"{"id":"43","text":"reply","relatedMessageId":"9007199254740993"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            message.related_message_id.as_deref(),
+            Some("9007199254740993")
+        );
     }
 
     #[test]

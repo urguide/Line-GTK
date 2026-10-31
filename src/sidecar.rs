@@ -256,11 +256,17 @@ impl Sidecar {
         )
     }
 
-    pub fn send_message(&self, chat_mid: &str, text: &str) -> Result<u64> {
-        self.request(
-            "send_message",
-            Some(json!({ "chatMid": chat_mid, "text": text })),
-        )
+    pub fn send_message(
+        &self,
+        chat_mid: &str,
+        text: &str,
+        related_message_id: Option<&str>,
+    ) -> Result<u64> {
+        let mut params = json!({ "chatMid": chat_mid, "text": text });
+        if let Some(id) = related_message_id {
+            params["relatedMessageId"] = json!(id);
+        }
+        self.request("send_message", Some(params))
     }
 
     pub fn send_audio(

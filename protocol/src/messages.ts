@@ -3,6 +3,17 @@ export function isVisualType(contentType: string): boolean {
     contentType === "STICKER";
 }
 
+/** Ignore non-reply relations (forwards, etc.) and keep IDs lossless. */
+export function replyTargetId(raw: {
+  relatedMessageId?: unknown;
+  messageRelationType?: unknown;
+}): string | null {
+  if (raw.messageRelationType !== "REPLY" && raw.messageRelationType !== 3) {
+    return null;
+  }
+  return raw.relatedMessageId ? String(raw.relatedMessageId) : null;
+}
+
 export function isMediaType(contentType: string): boolean {
   return isVisualType(contentType) || contentType === "AUDIO" ||
     contentType === "FILE";

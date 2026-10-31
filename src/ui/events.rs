@@ -528,9 +528,25 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                             .unwrap_or(&crate::i18n::t("friends_load_failed")),
                     );
                 }
-                if let Some(Pending::Send { placeholder_id, .. }) = pending.as_ref() {
+                if let Some(Pending::Send {
+                    placeholder_id,
+                    chat_mid,
+                    draft,
+                }) = pending.as_ref()
+                {
                     hide_upload_progress(state);
                     remove_pending_placeholder(state, placeholder_id);
+                    if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
+                        && state.composer.text().is_empty()
+                        && state.reply_target.borrow().is_none()
+                        && let Some(draft) = draft
+                    {
+                        state.composer.set_text(&draft.text);
+                        *state.reply_target.borrow_mut() = draft.reply.clone().filter(|target| {
+                            !state.unsent_msg_ids.borrow().contains(&target.message.id)
+                        });
+                        refresh_reply_preview(state);
+                    }
                 }
                 let err = error.as_deref().unwrap_or("request failed");
                 if matches!(pending, Some(Pending::Unsend { .. })) {
@@ -590,6 +606,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 Some(Pending::Send {
                     placeholder_id,
                     chat_mid,
+                    ..
                 }) => {
                     remove_pending_placeholder(state, &placeholder_id);
                     if state.current_chat.borrow().as_deref() != Some(chat_mid.as_str()) {

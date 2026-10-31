@@ -25,6 +25,18 @@ pub(super) struct VoicePlayback {
 
 pub(super) type MessageListFingerprint = (String, usize, String, String);
 
+#[derive(Debug, Clone)]
+pub(super) struct ReplyTarget {
+    pub chat_mid: String,
+    pub message: MessageInfo,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TextDraft {
+    pub text: String,
+    pub reply: Option<ReplyTarget>,
+}
+
 #[derive(Clone)]
 pub(super) struct AppState {
     pub app: Application,
@@ -37,6 +49,11 @@ pub(super) struct AppState {
     pub message_scroll: gtk::ScrolledWindow,
     pub composer: gtk::Entry,
     pub composer_row: gtk::Box,
+    pub reply_bar: gtk::Box,
+    pub reply_label: gtk::Label,
+    pub reply_cancel: gtk::Button,
+    pub reply_target: Rc<RefCell<Option<ReplyTarget>>>,
+    pub message_index: Rc<RefCell<HashMap<String, MessageInfo>>>,
     pub conversation: gtk::Box,
     pub send_btn: gtk::Button,
     pub status: gtk::Label,
@@ -159,6 +176,7 @@ pub(super) enum Pending {
     Send {
         chat_mid: String,
         placeholder_id: String,
+        draft: Option<Box<TextDraft>>,
     },
     ListStickers,
     Unsend {

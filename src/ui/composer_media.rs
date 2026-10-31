@@ -310,6 +310,7 @@ pub(super) fn send_sticker_now(
                 MessageInfo {
                     id: String::new(),
                     text: "[Sticker]".into(),
+                    related_message_id: None,
                     from: String::new(),
                     to: chat_mid.clone(),
                     mine: true,
@@ -652,6 +653,7 @@ pub(super) fn send_local_media_path(state: &AppState, path: PathBuf) {
                 MessageInfo {
                     id: String::new(),
                     text,
+                    related_message_id: None,
                     from: String::new(),
                     to: chat_mid.clone(),
                     mine: true,
@@ -866,6 +868,7 @@ pub(super) fn finish_voice_record(state: &AppState, send: bool) {
                 MessageInfo {
                     id: String::new(),
                     text: "Voice message".into(),
+                    related_message_id: None,
                     from: String::new(),
                     to: chat_mid.clone(),
                     mine: true,

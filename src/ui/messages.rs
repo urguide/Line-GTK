@@ -24,6 +24,10 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     state.media_queue.borrow_mut().clear();
     *state.stick_bottom.borrow_mut() = true;
     messages.sort_by_key(|m| m.created_time);
+    state
+        .message_index
+        .borrow_mut()
+        .extend(messages.iter().map(|m| (m.id.clone(), m.clone())));
     if let Some(mid) = state.current_chat.borrow().clone() {
         let (len, first, last) = message_list_fingerprint(&messages);
         *state.msg_list_fp.borrow_mut() = Some((mid, len, first, last));
@@ -89,6 +93,10 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     if !msg.id.is_empty() && !state.seen_msg_ids.borrow_mut().insert(msg.id.clone()) {
         return;
     }
+    state
+        .message_index
+        .borrow_mut()
+        .insert(msg.id.clone(), msg.clone());
 
     // Prefer a path that already finished hydrating (race with list rebuild).
     let ready_path = {
@@ -153,6 +161,25 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     let is_sticker = msg.content_type.eq_ignore_ascii_case("sticker");
     let is_flex = msg.content_type.eq_ignore_ascii_case("flex") || msg.flex.is_some();
     let is_pending = msg.id.starts_with("pending-");
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .halign(if msg.mine {
+            gtk::Align::End
+        } else {
+            gtk::Align::Start
+        })
+        .build();
+    if let Some(id) = msg.related_message_id.as_deref() {
+        let quote = gtk::Label::builder()
+            .label(reply_description(state, id))
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(42)
+            .css_classes(["line-reply-preview", "caption"])
+            .build();
+        content.append(&quote);
+    }
     let bubble = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(6)
@@ -302,6 +329,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     }
 
     let time_txt = format_msg_time(msg.created_time);
+    content.append(&bubble);
 
     if msg.mine {
         let col = gtk::Box::builder()
@@ -310,7 +338,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             .halign(gtk::Align::End)
             .hexpand(true)
             .build();
-        col.append(&bubble);
+        col.append(&content);
 
         let read = state
             .current_chat
@@ -346,7 +374,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             .build();
         footer.append(&status);
         if !is_pending && !msg.id.is_empty() {
-            append_unsend_menu(state, &footer, &bubble, msg);
+            append_message_menu(state, &footer, &content, msg);
         }
         col.append(&footer);
         outer.append(&gtk::Box::builder().hexpand(true).build());
@@ -358,8 +386,16 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             .valign(gtk::Align::End)
             .css_classes(["line-msg-time"])
             .build();
-        outer.append(&bubble);
-        outer.append(&time);
+        let footer = gtk::Box::builder()
+            .spacing(4)
+            .valign(gtk::Align::End)
+            .build();
+        footer.append(&time);
+        if !is_pending && !msg.id.is_empty() {
+            append_message_menu(state, &footer, &content, msg);
+        }
+        outer.append(&content);
+        outer.append(&footer);
         outer.append(&gtk::Box::builder().hexpand(true).build());
     }
 
@@ -391,14 +427,69 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     list.append(&row);
 }
 
-fn append_unsend_menu(state: &AppState, footer: &gtk::Box, bubble: &gtk::Box, msg: &MessageInfo) {
+pub(super) fn clear_reply(state: &AppState) {
+    *state.reply_target.borrow_mut() = None;
+    state.reply_bar.set_visible(false);
+    state.reply_label.set_text("");
+}
+
+fn reply_summary(msg: &MessageInfo) -> String {
+    let text = msg
+        .file_name
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&msg.text);
+    if text.is_empty() {
+        format!("[{}]", msg.content_type)
+    } else {
+        text.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(160)
+            .collect()
+    }
+}
+
+fn reply_description(state: &AppState, id: &str) -> String {
+    let summary = if state.unsent_msg_ids.borrow().contains(id) {
+        crate::i18n::t("message_unsent")
+    } else {
+        state
+            .message_index
+            .borrow()
+            .get(id)
+            .map(reply_summary)
+            .unwrap_or_else(|| crate::i18n::t("reply_original_unavailable"))
+    };
+    crate::i18n::tf("replying_to", &[("message", &summary)])
+}
+
+pub(super) fn refresh_reply_preview(state: &AppState) {
+    if let Some(target) = state.reply_target.borrow().as_ref() {
+        state.reply_label.set_text(&crate::i18n::tf(
+            "replying_to",
+            &[("message", &reply_summary(&target.message))],
+        ));
+        state.reply_bar.set_visible(true);
+    }
+}
+
+fn append_message_menu(state: &AppState, footer: &gtk::Box, bubble: &gtk::Box, msg: &MessageInfo) {
     let Some(chat_mid) = state.current_chat.borrow().clone() else {
         return;
     };
     let popover = gtk::Popover::new();
+    let actions = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let reply = gtk::Button::with_label(&crate::i18n::t("reply_message"));
+    reply.add_css_class("flat");
+    actions.append(&reply);
     let unsend = gtk::Button::with_label(&crate::i18n::t("unsend_message"));
     unsend.add_css_class("flat");
-    popover.set_child(Some(&unsend));
+    if msg.mine {
+        actions.append(&unsend);
+    }
+    popover.set_child(Some(&actions));
     let menu = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
         .tooltip_text(crate::i18n::t("message_actions"))
@@ -406,6 +497,26 @@ fn append_unsend_menu(state: &AppState, footer: &gtk::Box, bubble: &gtk::Box, ms
         .popover(&popover)
         .build();
     footer.append(&menu);
+
+    let s = state.clone();
+    let target = ReplyTarget {
+        chat_mid: chat_mid.clone(),
+        message: msg.clone(),
+    };
+    let popup = popover.downgrade();
+    reply.connect_clicked(move |_| {
+        if let Some(popup) = popup.upgrade() {
+            popup.popdown();
+        }
+        if s.current_chat.borrow().as_deref() != Some(target.chat_mid.as_str())
+            || s.unsent_msg_ids.borrow().contains(&target.message.id)
+        {
+            return;
+        }
+        *s.reply_target.borrow_mut() = Some(target.clone());
+        refresh_reply_preview(&s);
+        s.composer.grab_focus();
+    });
 
     let s = state.clone();
     let message_id = msg.id.clone();
@@ -469,6 +580,15 @@ pub(super) fn apply_message_unsent(state: &AppState, chat_mid: &str, message_id:
     if state.current_chat.borrow().as_deref() != Some(chat_mid) {
         return;
     }
+    let replying = state
+        .reply_target
+        .borrow()
+        .as_ref()
+        .is_some_and(|target| target.message.id == message_id);
+    if replying {
+        clear_reply(state);
+    }
+    state.message_index.borrow_mut().remove(message_id);
     let playing = state
         .voice_playback
         .borrow()
@@ -1092,6 +1212,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
     let msg = MessageInfo {
         id: message_id.to_string(),
         text: "Voice message".into(),
+        related_message_id: None,
         from: String::new(),
         to: String::new(),
         mine: true,
@@ -1274,7 +1395,7 @@ pub(super) fn handle_flex_action(
     }
     if kind == "message" {
         let text = action.data.clone().unwrap_or_else(|| action.label.clone());
-        if let Err(e) = state.sidecar.send_message(chat_mid, &text) {
+        if let Err(e) = state.sidecar.send_message(chat_mid, &text, None) {
             toast(
                 state,
                 &crate::i18n::tf("send_failed", &[("error", &e.to_string())]),
@@ -1337,6 +1458,10 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 }
 
 pub(super) fn clear_messages(state: &AppState) {
+    state.message_index.borrow_mut().clear();
+    if state.current_chat.borrow().is_none() {
+        clear_reply(state);
+    }
     *state.message_generation.borrow_mut() += 1;
     state.message_rows.borrow_mut().clear();
     stop_voice_playback(state);

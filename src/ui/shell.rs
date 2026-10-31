@@ -7,6 +7,9 @@ pub struct ShellWidgets {
     pub message_scroll: gtk::ScrolledWindow,
     pub composer: gtk::Entry,
     pub composer_row: gtk::Box,
+    pub reply_bar: gtk::Box,
+    pub reply_label: gtk::Label,
+    pub reply_cancel: gtk::Button,
     pub composer_stack: gtk::Stack,
     pub record_cancel_btn: gtk::Button,
     pub record_send_btn: gtk::Button,
@@ -482,6 +485,26 @@ pub fn build_shell_page() -> ShellWidgets {
     composer_stack.add_named(&record_bar, Some("record"));
     composer_stack.set_visible_child_name("compose");
 
+    let reply_bar = gtk::Box::builder()
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .visible(false)
+        .css_classes(["line-reply-preview"])
+        .build();
+    let reply_label = gtk::Label::builder()
+        .xalign(0.0)
+        .hexpand(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    let reply_cancel = gtk::Button::builder()
+        .icon_name("window-close-symbolic")
+        .tooltip_text(crate::i18n::t("cancel_reply"))
+        .css_classes(["flat", "circular"])
+        .build();
+    reply_bar.append(&reply_label);
+    reply_bar.append(&reply_cancel);
+
     let upload_label = gtk::Label::builder()
         .label("")
         .xalign(0.0)
@@ -522,6 +545,7 @@ pub fn build_shell_page() -> ShellWidgets {
     conversation.append(&msg_stack);
     conversation.append(&jump_banner);
     conversation.append(&upload_revealer);
+    conversation.append(&reply_bar);
     conversation.append(&composer_stack);
 
     let sidebar_paned = gtk::Paned::builder()
@@ -550,6 +574,9 @@ pub fn build_shell_page() -> ShellWidgets {
         message_scroll,
         composer,
         composer_row,
+        reply_bar,
+        reply_label,
+        reply_cancel,
         composer_stack,
         record_cancel_btn,
         record_send_btn,
@@ -1056,6 +1083,13 @@ pub fn load_css() {
             background: alpha(@card_bg_color, 0.45);
             border-top: 1px solid alpha(@borders, 0.35);
             padding-top: 4px;
+        }
+        .line-reply-preview {
+            border-left: 3px solid @accent_color;
+            padding: 6px 10px;
+            margin-top: 4px;
+            background: alpha(@accent_color, 0.08);
+            border-radius: 6px;
         }
         .line-composer {
             background: alpha(@window_bg_color, 0.94);

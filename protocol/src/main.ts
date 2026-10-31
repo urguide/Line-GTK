@@ -10,7 +10,7 @@ import { atomicWriteJson, ensurePrivateDir } from "./storage.ts";
 import { AuthStore, LineDevice } from "./auth.ts";
 import { CachePolicy, policyFor } from "./cache_policy.ts";
 import { picturePathOf, profileUrl } from "./contacts.ts";
-import { coerceI64, normalizeRaw } from "./messages.ts";
+import { coerceI64, normalizeRaw, replyTargetId } from "./messages.ts";
 import * as calls from "./calls.ts";
 import { createOutgoingMedia } from "./outgoing_media.ts";
 import { createMediaCache } from "./media_cache.ts";
@@ -770,6 +770,8 @@ async function summarizeTalkMessage(
     createdTime?: number | string | bigint;
     contentType?: string | number;
     contentMetadata?: Record<string, string>;
+    relatedMessageId?: string;
+    messageRelationType?: string | number;
   };
   const contentType = normType(raw.contentType);
   const meta = raw.contentMetadata ?? {};
@@ -846,6 +848,7 @@ async function summarizeTalkMessage(
       stickerId: null,
       flex,
       durationMs: duration ? Number(duration) : null,
+      relatedMessageId: replyTargetId(raw),
       needsMedia: !audioPath,
     };
   }
@@ -961,6 +964,7 @@ async function summarizeTalkMessage(
     stickerPackageId: stkPkg || null,
     flex,
     durationMs: meta.DURATION ? Number(meta.DURATION) : null,
+    relatedMessageId: replyTargetId(raw),
     needsMedia: (contentType === "IMAGE" || contentType === "VIDEO" ||
         contentType === "STICKER")
       ? !imagePath
@@ -994,6 +998,7 @@ async function summarizeRawMessage(
     }
     return {
       id: String(r.id ?? ""),
+      relatedMessageId: replyTargetId(r),
       text,
       from: String(r.from ?? ""),
       to: String(r.to ?? ""),
@@ -1732,6 +1737,9 @@ async function handle(req: Json) {
           id,
           String(params.chatMid ?? ""),
           String(params.text ?? ""),
+          params.relatedMessageId == null
+            ? undefined
+            : String(params.relatedMessageId),
         );
         break;
       case "unsend_message": {
