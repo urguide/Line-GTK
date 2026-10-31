@@ -587,10 +587,11 @@ mod tests {
     }
 
     #[test]
-    fn optional_preview_failures_still_upload_original_and_finish_successfully() {
+    fn optional_preview_and_duration_failures_still_upload_and_finish_successfully() {
         struct PreviewHost {
             ipc: Ipc,
             program: PathBuf,
+            probe: PathBuf,
         }
         impl Transport for PreviewHost {
             fn call(&self, method: &str, p: Value, generation: u64) -> Result<Value> {
@@ -604,176 +605,236 @@ mod tests {
             }
             fn application(&self, method: &str, p: Value, generation: u64) -> Result<Value> {
                 assert_eq!(method, "send_media");
-                self.ipc
-                    .send_attachment_with_preview(&p, generation, |source, dest| {
-                        Ipc::thumb_with_program(&self.program, source, dest)
-                    })
+                self.ipc.send_attachment_with_tools(
+                    &p,
+                    generation,
+                    |source, dest| Ipc::thumb_with_program(&self.program, source, dest),
+                    &self.probe,
+                )
             }
         }
+        let mut scenarios = Vec::new();
         for mode in ["missing", "failed", "empty", "success"] {
             for (kind, extension) in [("image", "png"), ("gif", "gif"), ("video", "mp4")] {
-                let root = std::env::temp_dir().join(format!(
-                    "line-optional-preview-{}-{mode}-{kind}",
-                    std::process::id()
+                scenarios.push((mode, kind, extension, "unused", Some(3200), 3200));
+            }
+        }
+        for probe in [
+            "missing", "failed", "invalid", "empty", "nan", "infinite", "negative", "zero",
+            "overflow", "success",
+        ] {
+            for (kind, extension) in [("audio", "m4a"), ("video", "mp4")] {
+                scenarios.push((
+                    "missing",
+                    kind,
+                    extension,
+                    probe,
+                    None,
+                    if probe == "success" { 2346 } else { 1919 },
                 ));
-                std::fs::create_dir_all(&root).unwrap();
-                let source = root.join(format!("original.{extension}"));
-                std::fs::write(&source, b"original attachment bytes").unwrap();
-                let program = root.join("fake-ffmpeg");
-                if mode != "missing" {
-                    use std::os::unix::fs::PermissionsExt;
-                    let script = match mode {
-                        "failed" => {
-                            "#!/bin/sh\nfor last; do :; done\nprintf partial > \"$last\"\nexit 1\n"
-                        }
-                        "empty" => "#!/bin/sh\nfor last; do :; done\n: > \"$last\"\n",
-                        _ => "#!/bin/sh\nfor last; do :; done\nprintf preview > \"$last\"\n",
-                    };
-                    std::fs::write(&program, script).unwrap();
-                    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))
-                        .unwrap();
-                }
-                let mut child = Command::new("cat")
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .spawn()
-                    .unwrap();
-                let stdout = child.stdout.take().unwrap();
-                let replies: Replies = Arc::default();
-                let waiting = replies.clone();
-                let transfer = root.join("cache/transfer");
-                let expected = mode == "success";
-                let responder = std::thread::spawn(move || {
-                    let mut line = String::new();
-                    BufReader::new(stdout).read_line(&mut line).unwrap();
-                    let request: Value = serde_json::from_str(&line).unwrap();
-                    assert_eq!(request["method"], "bridge_send_media");
-                    let p = &request["params"];
-                    assert_eq!(p["oType"], kind);
-                    assert_eq!(p["durationMs"], 3200);
-                    assert_eq!(
-                        std::fs::read(transfer.join(p["transferName"].as_str().unwrap())).unwrap(),
-                        b"original attachment bytes"
-                    );
-                    if expected {
-                        assert_eq!(
-                            std::fs::read(transfer.join(p["previewName"].as_str().unwrap()))
-                                .unwrap(),
-                            b"preview"
-                        );
-                    } else {
-                        assert!(p["previewName"].is_null());
-                        assert!(
-                            !transfer.join("preview-1.jpg").exists(),
-                            "partial preview must be removed before upload"
-                        );
-                    }
-                    let id = request["id"].as_u64().unwrap();
-                    waiting
-                        .lock()
-                        .unwrap()
-                        .remove(&id)
-                        .unwrap()
-                        .send(Response {
-                            id: Some(id),
-                            ok: Some(true),
-                            result: Some(json!({"rawMessage":{"id":"123","contentMetadata":{}}})),
-                            error: None,
-                            event: None,
-                            extra: Value::Null,
-                        })
-                        .unwrap();
-                });
-                let (events, rx) = async_channel::unbounded();
-                let generation = Arc::new(AtomicU64::new(1));
-                let ipc = Ipc {
-                    stdin: Arc::new(Mutex::new(child.stdin.take())),
-                    replies,
-                    ids: Arc::new(AtomicU64::new(1)),
-                    generation: generation.clone(),
-                    events,
-                    data: root.clone(),
-                    asset_at: Mutex::new(None),
+            }
+        }
+        for (mode, kind, extension, probe_mode, provided_duration, expected_duration) in scenarios {
+            let root = std::env::temp_dir().join(format!(
+                "line-optional-tools-{}-{mode}-{kind}-{probe_mode}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let source = root.join(format!("original.{extension}"));
+            std::fs::write(&source, b"original attachment bytes").unwrap();
+            let program = root.join("fake-ffmpeg");
+            let probe = root.join("fake-ffprobe");
+            if !matches!(probe_mode, "missing" | "unused") {
+                use std::os::unix::fs::PermissionsExt;
+                let (output, status) = match probe_mode {
+                    "failed" => ("3.2", 1),
+                    "invalid" => ("N/A", 0),
+                    "empty" => ("", 0),
+                    "nan" => ("NaN", 0),
+                    "infinite" => ("inf", 0),
+                    "negative" => ("-2", 0),
+                    "zero" => ("0", 0),
+                    "overflow" => ("1e30", 0),
+                    _ => ("2.3456", 0),
                 };
-                let db = root.join("cache.sqlite3");
-                let engine = Engine::new(
-                    Store::open(&db).unwrap(),
-                    PreviewHost { ipc, program },
-                    generation.clone(),
-                    root.join("legacy"),
-                );
-                let (tx, commands) = mpsc::channel();
-                let worker = std::thread::spawn(move || engine.run(commands));
-                tx.send(CoreCommand::Session {
-                    account: "me".into(),
-                    generation: 1,
-                })
+                std::fs::write(
+                    &probe,
+                    format!("#!/bin/sh\nprintf '%s\\n' '{output}'\nexit {status}\n"),
+                )
                 .unwrap();
-                tx.send(CoreCommand::Operation{id:42,method:"send_media".into(),params:json!({"chatMid":"u1","filePath":source,"oType":kind,"durationMs":3200}),generation:1}).unwrap();
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-                    let mut completed = 0;
-                    loop {
-                        let event = loop {
-                            if let Ok(event) = rx.try_recv() {
-                                break event;
-                            }
-                            assert!(std::time::Instant::now() < deadline, "no upload response");
-                            std::thread::sleep(Duration::from_millis(5));
-                        };
-                        match event {
-                            ProtocolEvent::UploadProgress {
-                                done: true,
-                                progress,
-                                ..
-                            } => {
-                                assert_eq!(progress, 1.0);
-                                completed += 1;
-                            }
-                            ProtocolEvent::Response {
-                                id: 42,
-                                ok,
-                                result,
-                                error,
-                            } => {
-                                assert!(ok, "{mode}/{kind}: {error:?}");
-                                assert_eq!(completed, 1);
-                                assert_eq!(result["message"]["imagePath"].is_null(), !expected);
-                                break;
-                            }
-                            _ => {}
-                        }
+                std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            if mode != "missing" {
+                use std::os::unix::fs::PermissionsExt;
+                let script = match mode {
+                    "failed" => {
+                        "#!/bin/sh\nfor last; do :; done\nprintf partial > \"$last\"\nexit 1\n"
                     }
-                    responder.join().unwrap();
-                }));
-                tx.send(CoreCommand::Stop).unwrap();
-                // In a failed assertion, disconnect the adapter to unblock any RPC wait.
-                let _ = child.kill();
-                let _ = child.wait();
-                if outcome.is_err() {
-                    generation.fetch_add(1, Ordering::SeqCst);
-                }
-                worker.join().unwrap();
-                if let Err(error) = outcome {
-                    std::panic::resume_unwind(error);
-                }
+                    "empty" => "#!/bin/sh\nfor last; do :; done\n: > \"$last\"\n",
+                    _ => "#!/bin/sh\nfor last; do :; done\nprintf preview > \"$last\"\n",
+                };
+                std::fs::write(&program, script).unwrap();
+                std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let mut child = Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let replies: Replies = Arc::default();
+            let waiting = replies.clone();
+            let transfer = root.join("cache/transfer");
+            let expected = mode == "success";
+            let responder = std::thread::spawn(move || {
+                let mut line = String::new();
+                BufReader::new(stdout).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], "bridge_send_media");
+                let p = &request["params"];
+                assert_eq!(p["oType"], kind);
+                assert_eq!(p["durationMs"], expected_duration);
                 assert_eq!(
-                    std::fs::read(root.join(format!("cache/media/123.{extension}"))).unwrap(),
+                    std::fs::read(transfer.join(p["transferName"].as_str().unwrap())).unwrap(),
                     b"original attachment bytes"
                 );
-                assert_eq!(std::fs::read(source).unwrap(), b"original attachment bytes");
-                assert_eq!(
-                    std::fs::read_dir(root.join("cache/transfer"))
-                        .unwrap()
-                        .count(),
-                    0
-                );
-                let mut store = Store::open(&db).unwrap();
-                store.set_account("me");
-                assert!(store.message("u1", "123").unwrap().is_some());
-                drop(store);
-                std::fs::remove_dir_all(root).unwrap();
+                if expected {
+                    assert_eq!(
+                        std::fs::read(transfer.join(p["previewName"].as_str().unwrap())).unwrap(),
+                        b"preview"
+                    );
+                } else {
+                    assert!(p["previewName"].is_null());
+                    assert!(
+                        !transfer.join("preview-1.jpg").exists(),
+                        "partial preview must be removed before upload"
+                    );
+                }
+                let id = request["id"].as_u64().unwrap();
+                waiting
+                    .lock()
+                    .unwrap()
+                    .remove(&id)
+                    .unwrap()
+                    .send(Response {
+                        id: Some(id),
+                        ok: Some(true),
+                        result: Some(json!({"rawMessage":{"id":"123","contentMetadata":{}}})),
+                        error: None,
+                        event: None,
+                        extra: Value::Null,
+                    })
+                    .unwrap();
+            });
+            let (events, rx) = async_channel::unbounded();
+            let generation = Arc::new(AtomicU64::new(1));
+            let ipc = Ipc {
+                stdin: Arc::new(Mutex::new(child.stdin.take())),
+                replies,
+                ids: Arc::new(AtomicU64::new(1)),
+                generation: generation.clone(),
+                events,
+                data: root.clone(),
+                asset_at: Mutex::new(None),
+            };
+            let db = root.join("cache.sqlite3");
+            let engine = Engine::new(
+                Store::open(&db).unwrap(),
+                PreviewHost {
+                    ipc,
+                    program,
+                    probe,
+                },
+                generation.clone(),
+                root.join("legacy"),
+            );
+            let (tx, commands) = mpsc::channel();
+            let worker = std::thread::spawn(move || engine.run(commands));
+            tx.send(CoreCommand::Session {
+                account: "me".into(),
+                generation: 1,
+            })
+            .unwrap();
+            let mut params = json!({"chatMid":"u1","filePath":source,"oType":kind});
+            if let Some(duration) = provided_duration {
+                params["durationMs"] = json!(duration);
             }
+            tx.send(CoreCommand::Operation {
+                id: 42,
+                method: "send_media".into(),
+                params,
+                generation: 1,
+            })
+            .unwrap();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let mut completed = 0;
+                loop {
+                    let event = loop {
+                        if let Ok(event) = rx.try_recv() {
+                            break event;
+                        }
+                        assert!(std::time::Instant::now() < deadline, "no upload response");
+                        std::thread::sleep(Duration::from_millis(5));
+                    };
+                    match event {
+                        ProtocolEvent::UploadProgress {
+                            done: true,
+                            progress,
+                            ..
+                        } => {
+                            assert_eq!(progress, 1.0);
+                            completed += 1;
+                        }
+                        ProtocolEvent::Response {
+                            id: 42,
+                            ok,
+                            result,
+                            error,
+                        } => {
+                            assert!(ok, "{mode}/{kind}: {error:?}");
+                            assert_eq!(completed, 1);
+                            assert_eq!(result["message"]["imagePath"].is_null(), !expected);
+                            if matches!(kind, "audio" | "video") {
+                                assert_eq!(result["message"]["durationMs"], expected_duration);
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                responder.join().unwrap();
+            }));
+            tx.send(CoreCommand::Stop).unwrap();
+            // In a failed assertion, disconnect the adapter to unblock any RPC wait.
+            let _ = child.kill();
+            let _ = child.wait();
+            if outcome.is_err() {
+                generation.fetch_add(1, Ordering::SeqCst);
+            }
+            worker.join().unwrap();
+            if let Err(error) = outcome {
+                std::panic::resume_unwind(error);
+            }
+            assert_eq!(
+                std::fs::read(root.join(format!("cache/media/123.{extension}"))).unwrap(),
+                b"original attachment bytes"
+            );
+            assert_eq!(std::fs::read(source).unwrap(), b"original attachment bytes");
+            assert_eq!(
+                std::fs::read_dir(root.join("cache/transfer"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+            let mut store = Store::open(&db).unwrap();
+            store.set_account("me");
+            let saved = store.message("u1", "123").unwrap().unwrap();
+            if matches!(kind, "audio" | "video") {
+                assert_eq!(saved["durationMs"], expected_duration);
+            }
+            drop(store);
+            std::fs::remove_dir_all(root).unwrap();
         }
     }
 }

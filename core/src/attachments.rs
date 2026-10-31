@@ -2,6 +2,21 @@
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
+pub const FALLBACK_DURATION_MS: i64 = 1919;
+
+/// Keep LINE's legacy fallback when media inspection is unavailable. Reject
+/// NaN/infinity/overflow before converting to an integer sent through JSON.
+pub fn duration_ms(explicit: Option<f64>, probe_seconds: impl FnOnce() -> Option<f64>) -> i64 {
+    fn valid(ms: f64) -> Option<i64> {
+        (ms.is_finite() && ms > 0.0 && ms <= 9_007_199_254_740_991.0)
+            .then(|| ms.round().max(1.0) as i64)
+    }
+    explicit
+        .and_then(valid)
+        .or_else(|| probe_seconds().and_then(|seconds| valid(seconds * 1000.0)))
+        .unwrap_or(FALLBACK_DURATION_MS)
+}
+
 /// Stage-based progress, not a fabricated byte-transfer percentage.
 pub fn upload_progress(chat: &str, progress: f64, label: &str, done: bool) -> Value {
     json!({"event":"upload_progress","chatMid":chat,"progress":progress,"label":label,"done":done})

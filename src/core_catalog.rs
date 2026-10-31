@@ -174,6 +174,16 @@ impl Ipc {
         generation: u64,
         make_preview: impl FnOnce(&Path, &Path) -> Result<()>,
     ) -> Result<Value> {
+        self.send_attachment_with_tools(p, generation, make_preview, Path::new("ffprobe"))
+    }
+
+    pub(crate) fn send_attachment_with_tools(
+        &self,
+        p: &Value,
+        generation: u64,
+        make_preview: impl FnOnce(&Path, &Path) -> Result<()>,
+        probe_program: &Path,
+    ) -> Result<Value> {
         let chat = p["chatMid"].as_str().unwrap_or_default();
         let progress = |fraction, label| -> Result<()> {
             self.active(generation)?;
@@ -242,25 +252,45 @@ impl Ipc {
             } else {
                 false
             };
-            let mut duration = p["durationMs"].as_i64();
-            if duration.is_none() && matches!(kind, "audio" | "video") {
-                let output = Command::new("ffprobe")
-                    .args([
-                        "-v",
-                        "error",
-                        "-show_entries",
-                        "format=duration",
-                        "-of",
-                        "default=nw=1:nk=1",
-                    ])
-                    .arg(&staged)
-                    .output()?;
-                duration = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .parse::<f64>()
-                    .ok()
-                    .map(|s| (s * 1000.0) as i64);
-            }
+            let duration = if matches!(kind, "audio" | "video") {
+                Some(line_gtk_core::attachments::duration_ms(
+                    p["durationMs"].as_f64(),
+                    || {
+                        let output = Command::new(probe_program)
+                            .args([
+                                "-v",
+                                "error",
+                                "-show_entries",
+                                "format=duration",
+                                "-of",
+                                "default=nw=1:nk=1",
+                            ])
+                            .arg(&staged)
+                            .output();
+                        match output {
+                            Ok(output) if output.status.success() => {
+                                std::str::from_utf8(&output.stdout)
+                                    .ok()?
+                                    .trim()
+                                    .parse::<f64>()
+                                    .ok()
+                            }
+                            Ok(_) => {
+                                tracing::warn!("ffprobe failed; using fallback duration");
+                                None
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    "ffprobe unavailable; using fallback duration: {error}"
+                                );
+                                None
+                            }
+                        }
+                    },
+                ))
+            } else {
+                p["durationMs"].as_i64()
+            };
             progress(0.35, "Uploading…")?;
             let mut result=self.call(method,json!({"chatMid":p["chatMid"],"transferName":name,"previewName":if preview_ready{Some(&preview_name)}else{None},"fileName":filename,"extension":ext,"mime":line_gtk_core::attachments::mime(&ext,kind),"oType":kind,"durationMs":duration}),generation)?;
             progress(0.90, "Saving attachment…")?;
@@ -279,6 +309,10 @@ impl Ipc {
                 kind.to_ascii_uppercase()
             });
             result["rawMessage"]["contentMetadata"]["FILE_NAME"] = json!(filename);
+            if matches!(kind, "audio" | "video") {
+                result["rawMessage"]["contentMetadata"]["DURATION"] =
+                    json!(duration.map(|n| n.to_string()));
+            }
             let id = string(&result["rawMessage"]["id"]);
             numeric(&id)?;
             let dest = self.data.join("cache/media").join(format!("{id}.{ext}"));

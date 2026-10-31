@@ -46,6 +46,11 @@ Upload previews are optional: missing ffmpeg, a failed conversion, or empty outp
 discards the preview and still uploads and stores the original attachment. The
 upload RPC receives no preview path in that case; terminal progress still reports
 the outcome of sending and persisting the original.
+Audio/video duration probing is optional too: a valid caller-provided duration
+takes precedence, otherwise Rust uses ffprobe when available. Missing tools,
+nonzero exits, invalid/nonfinite/nonpositive output fall back to the legacy
+1919 ms value rather than preventing upload. This fallback is not a measurement
+of the actual clip length.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends
