@@ -613,53 +613,29 @@ export function createCommandService(runtime: CommandRuntime) {
       | { id?: unknown; createdTime?: unknown; contentType?: unknown }
       | null = null;
 
-    // Prefer plain first (avoids e2ee contentMetadata crashes on some peers), then e2ee.
+    // Prefer E2EE, then retry without E2EE for development compatibility.
     try {
       sent = await client.base.talk.sendMessage({
         to: chatMid,
         text,
-        e2ee: false,
+        e2ee: true,
       }) as unknown as typeof sent;
-    } catch (e1) {
+    } catch (e) {
+      console.error("[send_message] E2EE failed; retrying without E2EE", e);
       try {
         sent = await client.base.talk.sendMessage({
           to: chatMid,
           text,
-          e2ee: true,
+          e2ee: false,
         }) as unknown as typeof sent;
-      } catch (e2) {
-        try {
-          const chat = await client.getChat(chatMid);
-          const m = await chat.sendMessage(text);
-          const message = await summarizeTalkMessage(m, { withMedia: false })
-            .catch(() =>
-              sentMessagePayload(
-                {
-                  id: (m as { raw?: { id?: unknown } }).raw?.id,
-                  createdTime: Date.now(),
-                },
-                chatMid,
-                text,
-              )
-            );
-          msgCache.delete(chatMid);
-          runtime.setChatCache(null);
-          touchChatPreviewFromMessage(message);
-          ok(id, { message });
-          return;
-        } catch (e3) {
-          fail(
-            id,
-            e3 instanceof Error
-              ? e3.message
-              : e2 instanceof Error
-              ? e2.message
-              : e1 instanceof Error
-              ? e1.message
-              : String(e1),
-          );
-          return;
-        }
+      } catch (fallbackError) {
+        fail(
+          id,
+          fallbackError instanceof Error
+            ? fallbackError.message
+            : String(fallbackError),
+        );
+        return;
       }
     }
 
