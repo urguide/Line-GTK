@@ -57,14 +57,14 @@ pub(super) fn prepend_messages(state: &AppState, mut messages: Vec<MessageInfo>)
     let generation = *state.history_generation.borrow();
     let s = state.clone();
     // Wait for GTK to allocate the inserted rows before compensating the scroll.
-    let mut frames = 0;
+    let frames = std::cell::Cell::new(0);
     state.message_list.widget().add_tick_callback(move |_, _| {
         if *s.history_generation.borrow() != generation {
             *s.scroll_pinning.borrow_mut() = false;
             return glib::ControlFlow::Break;
         }
-        frames += 1;
-        if frames < 3 {
+        frames.set(frames.get() + 1);
+        if frames.get() < 3 {
             return glib::ControlFlow::Continue;
         }
         let adj = s.message_scroll.vadjustment();
