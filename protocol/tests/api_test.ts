@@ -5,6 +5,63 @@ import { packRaw, unpackRaw } from "../src/raw_codec.ts";
 import { coerceI64 } from "../src/messages.ts";
 import { unsendFromOperation } from "../src/events.ts";
 
+Deno.test("Rust-normalized GIF keeps animation flags and MIME in the E2EE RPC", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    await Deno.writeFile(
+      `${directory}/animation.gif`,
+      new Uint8Array([71, 73, 70]),
+    );
+    const uploads: Record<string, unknown>[] = [];
+    let sent: Record<string, unknown> = {};
+    const client = {
+      base: {
+        e2ee: {
+          encryptByKeyMaterial: () =>
+            Promise.resolve({
+              keyMaterial: "a2V5",
+              encryptedData: new Uint8Array([1, 2, 3]),
+            }),
+          encryptE2EEMessage: (_to: unknown, _data: unknown, type: unknown) => {
+            assertEquals(type, 1);
+            return Promise.resolve([new Uint8Array([4])]);
+          },
+        },
+        obs: {
+          uploadObjectForService: (options: Record<string, unknown>) => {
+            uploads.push(options);
+            return Promise.resolve({ objId: "123" });
+          },
+        },
+        talk: {
+          sendMessage: (options: Record<string, unknown>) => {
+            sent = options;
+            return Promise.resolve({ id: "123" });
+          },
+        },
+      },
+    } as unknown as Client;
+    const api = createApi(() => client, directory);
+    await api("bridge_send_media", {
+      chatMid: "u1",
+      transferName: "animation.gif",
+      fileName: "Animation.GIF",
+      extension: "gif",
+      mime: "image/gif",
+      oType: "gif",
+    });
+    assertEquals(uploads.length, 2);
+    assertEquals(uploads[0].params, { type: "file", cat: "original" });
+    assertEquals(sent.contentType, 1);
+    const meta = sent.contentMetadata as Record<string, string>;
+    assertEquals(JSON.parse(meta.MEDIA_CONTENT_INFO).animated, true);
+    assertEquals(JSON.parse(meta.MEDIA_CONTENT_INFO).extension, "gif");
+    assertEquals(meta.e2eeVersion, "2");
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
 Deno.test("library E2EE RPC forwards original preview duration and errors without plaintext fallback", async () => {
   const directory = await Deno.makeTempDir();
   try {

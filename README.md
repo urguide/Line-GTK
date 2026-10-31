@@ -55,6 +55,11 @@ E2EE attachment failures can retry once through linejs `uploadMediaByE2EE`,
 selected and paced by Rust with the same staged original, preview and duration.
 User/group uploads never fall back to plaintext. Session cancellation or an IPC
 timeout/disconnection does not resend an upload whose server outcome is unknown.
+Attachment classification and MIME selection are centralized in Rust, including
+BMP/HEIC images, M4V video, AAC/OGA/FLAC audio, case-insensitive explicit types,
+and the legacy `image` + `.gif` correction to animated `gif`. Recognized explicit
+types take precedence; unknown types use filename detection. MIME metadata keeps
+the previous LINE client's mappings and defaults; this does not transcode media.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

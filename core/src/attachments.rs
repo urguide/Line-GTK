@@ -63,8 +63,33 @@ pub fn upload(
         }
     }
 }
-pub fn mime(extension: &str, kind: &str) -> &'static str {
+/// Match the original client's precedence: recognized explicit types win,
+/// except image + .gif; unknown/empty types use the filename just like auto.
+pub fn normalize_media_type(requested: &str, filename: &str) -> &'static str {
+    let filename = filename.to_ascii_lowercase();
+    match requested.trim().to_ascii_lowercase().as_str() {
+        "image" if filename.ends_with(".gif") => return "gif",
+        "image" => return "image",
+        "gif" => return "gif",
+        "video" => return "video",
+        "audio" => return "audio",
+        "file" => return "file",
+        _ => {}
+    }
+    let extension = filename.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
     match extension {
+        "gif" => "gif",
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "heic" => "image",
+        "mp4" | "webm" | "mov" | "mkv" | "m4v" => "video",
+        "m4a" | "mp3" | "wav" | "ogg" | "oga" | "aac" | "flac" => "audio",
+        _ => "file",
+    }
+}
+
+/// Preserve the legacy LINE upload MIME table and its type-based defaults.
+/// This selects protocol metadata; it does not transcode file contents.
+pub fn mime(extension: &str, kind: &str) -> &'static str {
+    match extension.to_ascii_lowercase().as_str() {
         "png" => "image/png",
         "gif" => "image/gif",
         "webp" => "image/webp",

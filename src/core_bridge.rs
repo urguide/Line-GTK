@@ -444,6 +444,102 @@ impl Transport for Ipc {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+
+    #[test]
+    fn attachment_types_reach_rpc_preview_and_saved_message() {
+        for (index, (filename, requested, kind, mime)) in [
+            ("photo.BMP", "auto", "image", "image/bmp"),
+            ("photo.HEIC", "auto", "image", "image/jpeg"),
+            ("clip.M4V", "auto", "video", "video/mp4"),
+            ("voice.AAC", "auto", "audio", "audio/mp4"),
+            ("voice.OGA", "auto", "audio", "audio/ogg"),
+            ("voice.FLAC", "auto", "audio", "audio/mp4"),
+            ("animation.GIF", " IMAGE ", "gif", "image/gif"),
+            ("animation.GIF", " FILE ", "file", "image/gif"),
+            ("photo.bmp", "unsupported", "image", "image/bmp"),
+            ("blob.bin", " ViDeO ", "video", "video/mp4"),
+            ("blob.bin", " AuDiO ", "audio", "audio/mp4"),
+            ("blob.bin", " GIF ", "gif", "image/jpeg"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let root =
+                std::env::temp_dir().join(format!("line-type-rpc-{}-{index}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            let source = root.join(filename);
+            std::fs::write(&source, b"unchanged original").unwrap();
+            let mut child = Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let replies: Replies = Arc::default();
+            let waiting = replies.clone();
+            let preview_expected = matches!(kind, "image" | "gif" | "video");
+            let responder = std::thread::spawn(move || {
+                let mut line = String::new();
+                BufReader::new(stdout).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let p = &request["params"];
+                // Reply before assertions so a regression never leaves the caller waiting.
+                let id = request["id"].as_u64().unwrap();
+                waiting
+                    .lock()
+                    .unwrap()
+                    .remove(&id)
+                    .unwrap()
+                    .send(Response {
+                        id: Some(id),
+                        ok: Some(true),
+                        result: Some(json!({"rawMessage":{"id":"123","contentMetadata":{}}})),
+                        error: None,
+                        event: None,
+                        extra: Value::Null,
+                    })
+                    .unwrap();
+                assert_eq!(request["method"], "bridge_send_media");
+                assert_eq!(p["oType"], kind);
+                assert_eq!(p["mime"], mime);
+                assert_eq!(p["fileName"], filename);
+                assert_eq!(p["previewName"].is_string(), preview_expected);
+                assert!(p["transferName"].as_str().unwrap().starts_with("upload-"));
+            });
+            let (events, _) = async_channel::unbounded();
+            let generation = Arc::new(AtomicU64::new(1));
+            let ipc = Ipc {
+                stdin: Arc::new(Mutex::new(child.stdin.take())),
+                replies,
+                ids: Arc::new(AtomicU64::new(1)),
+                generation,
+                events,
+                data: root.clone(),
+                asset_at: Mutex::new(None),
+            };
+            let mut preview_called = false;
+            let result=ipc.send_attachment_with_tools(&json!({"chatMid":"u1","account":"me","filePath":source,"oType":requested,"durationMs":3200}),1,|_,dest|{preview_called=true;std::fs::write(dest,b"preview")?;Ok(())},Path::new("/unused-probe"));
+            let _ = child.kill();
+            let _ = child.wait();
+            responder.join().unwrap();
+            let result = result.unwrap();
+            assert_eq!(preview_called, preview_expected);
+            assert_eq!(
+                result["rawMessage"]["contentType"],
+                if kind == "gif" {
+                    "IMAGE".into()
+                } else {
+                    kind.to_ascii_uppercase()
+                }
+            );
+            assert_eq!(
+                std::fs::read(result["filePath"].as_str().unwrap()).unwrap(),
+                b"unchanged original"
+            );
+            assert_eq!(std::fs::read(source).unwrap(), b"unchanged original");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
     #[test]
     fn rust_upload_events_reach_the_existing_ui_protocol_variant() {
         let (events, rx) = async_channel::unbounded();

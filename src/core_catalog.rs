@@ -207,16 +207,10 @@ impl Ipc {
             .and_then(|s| s.to_str())
             .unwrap_or("bin")
             .to_ascii_lowercase();
-        let kind = match p["oType"].as_str().unwrap_or("auto") {
-            "auto" => match ext.as_str() {
-                "gif" => "gif",
-                "jpg" | "jpeg" | "png" | "webp" => "image",
-                "mp4" | "webm" | "mov" | "mkv" => "video",
-                "m4a" | "mp3" | "ogg" | "wav" => "audio",
-                _ => "file",
-            },
-            other => other,
-        };
+        let kind = line_gtk_core::attachments::normalize_media_type(
+            p["oType"].as_str().unwrap_or("auto"),
+            &filename,
+        );
         let dir = self.data.join("cache/transfer");
         crate::config::ensure_private_dir(&dir)?;
         let token = self.ids.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
