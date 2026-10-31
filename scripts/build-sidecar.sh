@@ -6,6 +6,8 @@ deno_bin="${DENO:-deno}"
 output="${1:-$project_root/protocol/line-gtk-protocol}"
 
 "$deno_bin" compile \
+  --config "$project_root/protocol/deno.json" \
+  --frozen \
   --no-prompt \
   --allow-read \
   --allow-write \

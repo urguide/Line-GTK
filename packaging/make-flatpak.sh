@@ -4,15 +4,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VER="$(grep -m1 '^version' "$ROOT/Cargo.toml" | cut -d'"' -f2)"
 ARCH="$(uname -m)"
-STAGE="/tmp/line-gtk-${VER}-x86_64"
-OUT="/tmp/line-gtk-${VER}-${ARCH}.flatpak"
+case "$ARCH" in
+  x86_64|aarch64) ;;
+  *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+DIST_DIR="${LINE_GTK_DIST_DIR:-/tmp}"
+mkdir -p "$DIST_DIR"
+DIST_DIR="$(cd "$DIST_DIR" && pwd)"
+STAGE="${DIST_DIR}/line-gtk-${VER}-${ARCH}"
+OUT="${DIST_DIR}/line-gtk-${VER}-${ARCH}.flatpak"
 
 command -v flatpak >/dev/null || {
   echo "flatpak is required" >&2
-  exit 1
-}
-[[ "$ARCH" == "x86_64" ]] || {
-  echo "the current prebuilt release supports x86_64 only (found $ARCH)" >&2
   exit 1
 }
 command -v flatpak-builder >/dev/null || {
@@ -39,6 +42,7 @@ STATE_DIR="$WORK/state"
 flatpak-builder \
   --force-clean \
   --user \
+  --arch="$ARCH" \
   --state-dir="$STATE_DIR" \
   --install-deps-from=flathub \
   --default-branch=stable \
@@ -58,6 +62,7 @@ grep -q '"event":"ready"' "$SMOKE_OUT"
 
 rm -f "$OUT"
 flatpak build-bundle \
+  --arch="$ARCH" \
   "$REPO_DIR" \
   "$OUT" \
   dev.linegtk.LineGtk \

@@ -7,26 +7,35 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 VER="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
-STAGE="line-gtk-${VER}-x86_64"
-OUT_DIR="/tmp/${STAGE}"
-OUT_TAR="/tmp/${STAGE}.tar.gz"
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|aarch64) ;;
+  *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+DIST_DIR="${LINE_GTK_DIST_DIR:-/tmp}"
+mkdir -p "$DIST_DIR"
+DIST_DIR="$(cd "$DIST_DIR" && pwd)"
+STAGE="line-gtk-${VER}-${ARCH}"
+OUT_DIR="${DIST_DIR}/${STAGE}"
+OUT_TAR="${DIST_DIR}/${STAGE}.tar.gz"
 
 echo "==> building release binary"
-cargo build --release
+cargo build --locked --release
 
 echo "==> staging ${OUT_DIR}"
 rm -rf "$OUT_DIR" "$OUT_TAR"
 mkdir -p "$OUT_DIR"
 cp -a target/release/line-gtk "$OUT_DIR/"
-cp -a protocol assets "$OUT_DIR/"
+mkdir -p "$OUT_DIR/protocol"
+# Copy only distributable sources, never local sessions or dependency caches.
+cp -a protocol/src protocol/vendor protocol/deno.json protocol/deno.lock "$OUT_DIR/protocol/"
+cp -a assets "$OUT_DIR/"
 echo "==> compiling offline protocol sidecar"
 ./scripts/build-sidecar.sh "$OUT_DIR/protocol/line-gtk-protocol"
-cp -a packaging/dev.linegtk.LineGtk.desktop "$OUT_DIR/" 2>/dev/null || true
-cp -a README.md LICENSE "$OUT_DIR/" 2>/dev/null || true
-rm -rf "$OUT_DIR/protocol/node_modules" "$OUT_DIR/protocol/.deno" 2>/dev/null || true
+cp -a packaging/dev.linegtk.LineGtk.desktop README.md LICENSE "$OUT_DIR/"
 
 echo "==> packing ${OUT_TAR}"
-tar -C /tmp -czf "$OUT_TAR" "$STAGE"
+tar -C "$DIST_DIR" -czf "$OUT_TAR" "$STAGE"
 sha256sum "$OUT_TAR"
 ./packaging/check-package.sh "$OUT_TAR"
 
@@ -35,7 +44,7 @@ echo "Done. Asset ready:"
 echo "  $OUT_TAR"
 echo
 echo "If release v${VER} does not exist yet:"
-echo "  gh release create v${VER} \"$OUT_TAR\" --title \"v${VER}\" --notes \"Prebuilt x86_64 Linux bundle.\""
+echo "  gh release create v${VER} \"$OUT_TAR\" --verify-tag --title \"v${VER}\" --notes \"Prebuilt ${ARCH} Linux bundle.\""
 echo
 echo "If release already exists:"
 echo "  gh release upload v${VER} \"$OUT_TAR\" --clobber"

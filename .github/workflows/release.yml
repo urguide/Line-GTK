@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Build and retain artifacts without publishing a release.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          with open("Cargo.toml", "rb") as source:
+              version = tomllib.load(source)["package"]["version"]
+          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
+              raise SystemExit(f"Unsupported release version: {version}")
+          if os.environ["REF_TYPE"] == "tag" and os.environ["REF_NAME"] != f"v{version}":
+              raise SystemExit(f"Tag must match Cargo.toml: expected v{version}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"version={version}", file=output)
+          PY
+
+  build:
+    name: Build Linux ${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    env:
+      DENO_FROZEN_LOCKFILE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check native architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          echo "LINE_GTK_DIST_DIR=$RUNNER_TEMP/line-gtk-dist" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev ffmpeg appstream flatpak flatpak-builder ostree
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+      - name: Check Rust
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-targets --all-features
+      - name: Check protocol
+        working-directory: protocol
+        run: deno task check
+      - name: Validate Flatpak metadata
+        run: appstreamcli validate --no-net packaging/flatpak/dev.linegtk.LineGtk.metainfo.xml
+      - name: Build and check release assets
+        run: ./packaging/make-release-assets.sh
+      - name: Verify checksums
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          cd "$LINE_GTK_DIST_DIR"
+          sha256sum --check "SHA256SUMS-$ARCH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/line-gtk-dist/*.tar.gz
+            ${{ runner.temp }}/line-gtk-dist/*.flatpak
+            ${{ runner.temp }}/line-gtk-dist/SHA256SUMS-*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify all assets and combine checksums
+        working-directory: dist
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          for arch in x86_64 aarch64; do
+            test -s "line-gtk-$VERSION-$arch.tar.gz"
+            test -s "line-gtk-$VERSION-$arch.flatpak"
+            test "$(wc -l < "SHA256SUMS-$arch")" -eq 2
+            sha256sum --check "SHA256SUMS-$arch"
+          done
+          cat SHA256SUMS-x86_64 SHA256SUMS-aarch64 > SHA256SUMS
+      - name: Publish release assets
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
+          gh release create "$TAG" \
+            --verify-tag --title "$TAG" --generate-notes \
+            "${prerelease[@]}" \
+            ./*.tar.gz ./*.flatpak SHA256SUMS

@@ -44,15 +44,18 @@ yay -S line-gtk
 ```
 
 ## Install (Flatpak bundle)
+Download the matching `x86_64` or `aarch64` (ARM64) bundle from
+[this fork's releases](https://github.com/urguide/Line-GTK/releases).
+
 ```bash
-flatpak install --user ./line-gtk-0.1.2-x86_64.flatpak
+flatpak install --user ./line-gtk-VERSION-ARCH.flatpak
 flatpak run dev.linegtk.LineGtk
 ```
 
 ## Build and run
 
 ```bash
-git clone https://github.com/MidnightTale/Line-GTK.git
+git clone https://github.com/urguide/Line-GTK.git
 cd Line-GTK
 cargo build --release
 ./target/release/line-gtk
@@ -66,6 +69,14 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 deno task --config protocol/deno.json check
 ```
+
+## Releases
+
+Pushing a `vVERSION` tag matching `Cargo.toml` automatically builds Linux
+x86_64 and ARM64 `.tar.gz` and `.flatpak` packages and publishes them with
+`SHA256SUMS`. **Actions → Release → Run workflow** builds downloadable artifacts
+without publishing. See [distribution notes](packaging/README.md) for setup,
+runtime requirements, and local builds.
 
 ---
 
