@@ -5,6 +5,77 @@ import { packRaw, unpackRaw } from "../src/raw_codec.ts";
 import { coerceI64 } from "../src/messages.ts";
 import { unsendFromOperation } from "../src/events.ts";
 
+Deno.test("plain OBS attachment RPC preserves destination, GIF, filename and duration without duplicate sends", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    await Deno.writeFile(`${directory}/upload.bin`, new Uint8Array([1, 2, 3]));
+    const seen: unknown[][] = [];
+    const client = {
+      base: {
+        obs: {
+          uploadObjTalk: (...args: unknown[]) => {
+            seen.push(args);
+            return Promise.resolve({
+              objId: "9007199254740993",
+              objHash: "hash",
+            });
+          },
+        },
+        talk: {
+          sendMessage: () => {
+            throw new Error("must not duplicate OBS send");
+          },
+        },
+        e2ee: {
+          encryptByKeyMaterial: () => {
+            throw new Error("not an E2EE destination");
+          },
+        },
+      },
+    } as unknown as Client;
+    const api = createApi(() => client, directory);
+    for (
+      const [chatMid, oType] of [["r-room", "gif"], ["m-square", "video"], [
+        "t-square",
+        "audio",
+      ]]
+    ) {
+      assertEquals(
+        await api("bridge_upload_plain_media", {
+          chatMid,
+          oType,
+          transferName: "upload.bin",
+          fileName: "測試.bin",
+          mime: "image/gif",
+          durationMs: 3142,
+        }),
+        { objId: "9007199254740993", objHash: "hash" },
+      );
+    }
+    assertEquals(
+      seen.map((args) => [args[0], args[1], args[3], args[4], args[5]]),
+      [["r-room", "gif", undefined, "測試.bin", 3142], [
+        "m-square",
+        "video",
+        undefined,
+        "測試.bin",
+        3142,
+      ], ["t-square", "audio", undefined, "測試.bin", 3142]],
+    );
+    assertEquals(
+      [...new Uint8Array(await (seen[0][2] as Blob).arrayBuffer())],
+      [1, 2, 3],
+    );
+    await assertRejects(
+      () => api("bridge_upload_plain_media", { transferName: "../secret" }),
+      Error,
+      "invalid_transfer_name",
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
 Deno.test("API forwards exact read receipt, reply and withdrawal IDs", async () => {
   const seen: Record<string, unknown>[] = [];
   const client = {

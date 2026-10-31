@@ -196,6 +196,27 @@ export function createApi(getClient: () => Client | null, transfer: string) {
         }
         return { path, mime: blob.type, bytes: blob.size };
       }
+      case "bridge_upload_plain_media": {
+        const bytes = await Deno.readFile(transferPath(p.transferName));
+        const data = new Blob([bytes], {
+          type: String(p.mime || "application/octet-stream"),
+        });
+        const type = String(p.oType);
+        if (!["image", "gif", "video", "audio", "file"].includes(type)) {
+          throw new Error("invalid_media_type");
+        }
+        // Destination selection belongs to Rust. This call also sends the OBS
+        // message; never follow it with sendMessage (which would duplicate it).
+        const uploaded = await c.base.obs.uploadObjTalk(
+          String(p.chatMid),
+          type as "image" | "gif" | "video" | "audio" | "file",
+          data,
+          undefined,
+          String(p.fileName),
+          p.durationMs as number | undefined,
+        );
+        return { objId: uploaded.objId, objHash: uploaded.objHash };
+      }
       case "bridge_send_media": {
         const bytes = await Deno.readFile(transferPath(p.transferName));
         const data = new Blob([bytes], {

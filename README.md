@@ -24,6 +24,12 @@ only `protocol-state/` and `cache/transfer/` are readable/writable; subprocess,
 FFI and system-query permissions are denied. Audio uses a private Unix socket
 to Rust, and attachments use file paths instead of JSON/base64 payloads.
 
+Rust selects E2EE attachment upload for user/group chats and the existing OBS
+upload route for other destinations. Legacy `stickers-index.json` recents are
+merged into the first signed-in account once, without deleting the source file.
+Local capture/playback failures restart the affected audio process with a delay;
+the PCM socket and LINE call remain connected until cancellation or socket loss.
+
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends
 - [x] 20-message history pages on upward scroll, merged disk cache (360 days in Smart mode)

@@ -398,6 +398,9 @@ impl Store {
 
     /// Legacy files are never deleted. Claim each file once, after account login.
     pub fn import_legacy(&mut self, directory: &Path) -> Result<()> {
+        if let Some(data) = directory.parent().and_then(Path::parent) {
+            self.import_legacy_stickers(&data.join("stickers-index.json"))?;
+        }
         if !directory.exists() {
             return Ok(());
         }
@@ -475,6 +478,67 @@ impl Store {
                 params![key, self.account],
             )?;
         }
+        Ok(())
+    }
+
+    /// Catalog and migration claim commit together, including installations with
+    /// no history directory. Existing SQLite recents take precedence on duplicates.
+    pub fn import_legacy_stickers(&mut self, path: &Path) -> Result<()> {
+        if !path.is_file() {
+            return Ok(());
+        }
+        let key = path.to_string_lossy();
+        let tx = self.db.transaction()?;
+        let claimed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM migrations WHERE path=?1)",
+            params![key],
+            |r| r.get(0),
+        )?;
+        if claimed {
+            return Ok(());
+        }
+        let legacy: Vec<Value> = serde_json::from_slice(&std::fs::read(path)?)?;
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT body FROM catalogs WHERE account=?1 AND kind='recent_stickers'",
+                params![self.account],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let mut rows: Vec<Value> = existing
+            .map(|v| serde_json::from_str(&v))
+            .transpose()?
+            .unwrap_or_default();
+        rows.extend(legacy);
+        let mut seen = std::collections::HashSet::new();
+        rows.retain_mut(|row| {
+            let sticker = crate::message::string(&row["stickerId"]);
+            let package = crate::message::string(&row["packageId"]);
+            if sticker.is_empty()
+                || package.is_empty()
+                || !sticker.bytes().all(|c| c.is_ascii_digit())
+                || !package.bytes().all(|c| c.is_ascii_digit())
+                || !seen.insert((package.clone(), sticker.clone()))
+            {
+                return false;
+            }
+            row["stickerId"] = json!(sticker);
+            row["packageId"] = json!(package);
+            if !row["version"].is_null() {
+                row["version"] = json!(crate::message::string(&row["version"]));
+            }
+            true
+        });
+        rows.truncate(200);
+        tx.execute(
+            "INSERT OR REPLACE INTO catalogs VALUES(?1,'recent_stickers',?2,?3)",
+            params![self.account, now(), serde_json::to_string(&rows)?],
+        )?;
+        tx.execute(
+            "INSERT INTO migrations VALUES(?1,?2)",
+            params![key, self.account],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 }

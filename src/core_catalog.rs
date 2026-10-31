@@ -217,6 +217,8 @@ impl Ipc {
         Ok(json!({"packs":packs,"ownedPackages":products.len()}))
     }
     fn send_attachment(&self, p: &Value, generation: u64) -> Result<Value> {
+        let method =
+            line_gtk_core::attachments::upload_method(p["chatMid"].as_str().unwrap_or_default())?;
         let source = Path::new(p["filePath"].as_str().context("missing attachment")?);
         if !source.is_file() {
             bail!("attachment is not a regular file");
@@ -271,7 +273,14 @@ impl Ipc {
                     .ok()
                     .map(|s| (s * 1000.0) as i64);
             }
-            let mut result=self.call("bridge_send_media",json!({"chatMid":p["chatMid"],"transferName":name,"previewName":if preview.is_file(){Some(&preview_name)}else{None},"fileName":filename,"extension":ext,"oType":kind,"durationMs":duration}),generation)?;
+            let mut result=self.call(method,json!({"chatMid":p["chatMid"],"transferName":name,"previewName":if preview.is_file(){Some(&preview_name)}else{None},"fileName":filename,"extension":ext,"mime":line_gtk_core::attachments::mime(&ext,kind),"oType":kind,"durationMs":duration}),generation)?;
+            if method == "bridge_upload_plain_media" {
+                let object_id = result["objId"]
+                    .as_str()
+                    .context("upload response missing object ID")?;
+                numeric(object_id)?;
+                result = json!({"rawMessage":{"id":object_id,"createdTime":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64,"contentMetadata":{"DURATION":duration.map(|n|n.to_string())}}});
+            }
             result["rawMessage"]["from"] = p["account"].clone();
             result["rawMessage"]["to"] = p["chatMid"].clone();
             result["rawMessage"]["contentType"] = json!(if kind == "gif" {
