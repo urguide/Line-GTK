@@ -162,7 +162,10 @@ export function createMessageView(runtime: MessageViewRuntime) {
           await existingImage(mediaDest(id, "png"));
         if (cached) {
           imagePath = (await uiMediaPath(id, cached)) || cached;
-          needsMedia = false;
+          needsMedia = ct === "IMAGE"
+            ? !(await existingFullImage(id))
+            : !(await Deno.stat(mediaDest(id, "mp4")).then((st) => st.size > 32)
+              .catch(() => false));
         }
       } else if (ct === "AUDIO") {
         audioPath = null;
@@ -180,7 +183,9 @@ export function createMessageView(runtime: MessageViewRuntime) {
         needsMedia = false;
       }
 
-      return { ...m, imagePath, audioPath, needsMedia };
+      const visible = { ...m, imagePath, audioPath, needsMedia };
+      delete (visible as Json).rawMessage;
+      return visible;
     }));
   }
 

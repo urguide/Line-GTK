@@ -1,5 +1,79 @@
 use super::*;
 
+pub(super) fn load_older_messages(state: &AppState) {
+    if *state.history_loading.borrow()
+        || !*state.history_has_more.borrow()
+        || *state.scroll_pinning.borrow()
+        || !*state.session_ready.borrow()
+    {
+        return;
+    }
+    let Some(mid) = state.current_chat.borrow().clone() else {
+        return;
+    };
+    let Some(cursor) = state.history_cursor.borrow().clone() else {
+        return;
+    };
+    match state.sidecar.fetch_older_messages(&mid, cursor) {
+        Ok(id) => {
+            *state.history_loading.borrow_mut() = true;
+            *state.stick_bottom.borrow_mut() = false;
+            state.pending.borrow_mut().insert(
+                id,
+                Pending::FetchMessages {
+                    chat_mid: mid,
+                    generation: *state.history_generation.borrow(),
+                    older: true,
+                },
+            );
+        }
+        Err(error) => toast(state, &error.to_string()),
+    }
+}
+
+pub(super) fn prepend_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
+    messages.retain(|m| {
+        !state.seen_msg_ids.borrow().contains(&m.id)
+            && !state.unsent_msg_ids.borrow().contains(&m.id)
+    });
+    if messages.is_empty() {
+        return;
+    }
+    messages.sort_by_key(|m| m.created_time);
+    let old_count = state.message_list.len();
+    let adj = state.message_scroll.vadjustment();
+    let old_upper = adj.upper();
+    let old_value = adj.value();
+    let last_day = state.last_msg_day.borrow().clone();
+    *state.last_msg_day.borrow_mut() = None;
+    *state.scroll_pinning.borrow_mut() = true;
+    *state.stick_bottom.borrow_mut() = false;
+    for message in &messages {
+        append_message(state, message, false);
+    }
+    *state.last_msg_day.borrow_mut() = last_day;
+    state.message_list.move_tail_to_front(old_count);
+    *state.msg_list_fp.borrow_mut() = None;
+    let generation = *state.history_generation.borrow();
+    let s = state.clone();
+    // Wait for GTK to allocate the inserted rows before compensating the scroll.
+    let mut frames = 0;
+    state.message_list.widget().add_tick_callback(move |_, _| {
+        if *s.history_generation.borrow() != generation {
+            *s.scroll_pinning.borrow_mut() = false;
+            return glib::ControlFlow::Break;
+        }
+        frames += 1;
+        if frames < 3 {
+            return glib::ControlFlow::Continue;
+        }
+        let adj = s.message_scroll.vadjustment();
+        adj.set_value(old_value + (adj.upper() - old_upper).max(0.0));
+        *s.scroll_pinning.borrow_mut() = false;
+        glib::ControlFlow::Break
+    });
+}
+
 pub(super) fn message_list_fingerprint(messages: &[MessageInfo]) -> (usize, String, String) {
     let first = messages.first().map(|m| m.id.clone()).unwrap_or_default();
     let last = messages.last().map(|m| m.id.clone()).unwrap_or_default();

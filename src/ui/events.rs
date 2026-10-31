@@ -511,12 +511,25 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         Some(error.as_deref().unwrap_or("Failed to load chats")),
                     );
                 }
-                if matches!(pending, Some(Pending::FetchMessages { .. })) {
-                    set_msg_state(
-                        state,
-                        "empty",
-                        Some(error.as_deref().unwrap_or("Failed to load messages")),
-                    );
+                if let Some(Pending::FetchMessages {
+                    chat_mid,
+                    generation,
+                    older,
+                }) = pending.as_ref()
+                {
+                    if state.current_chat.borrow().as_deref() != Some(chat_mid.as_str())
+                        || *generation != *state.history_generation.borrow()
+                    {
+                        return;
+                    }
+                    *state.history_loading.borrow_mut() = false;
+                    if !older && state.message_list.first_child().is_none() {
+                        set_msg_state(
+                            state,
+                            "empty",
+                            Some(error.as_deref().unwrap_or("Failed to load messages")),
+                        );
+                    }
                 }
                 if matches!(pending, Some(Pending::ListFriends))
                     && let Some(ui) = state.friends_ui.borrow().as_ref()
@@ -591,15 +604,36 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         friends::apply_friends(ui, friends);
                     }
                 }
-                Some(Pending::FetchMessages { chat_mid }) => {
-                    if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
+                Some(Pending::FetchMessages {
+                    chat_mid,
+                    generation,
+                    older,
+                }) => {
+                    if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
+                        && generation == *state.history_generation.borrow()
+                    {
+                        *state.history_loading.borrow_mut() = false;
+                        *state.history_has_more.borrow_mut() = result
+                            .get("hasMore")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        *state.history_cursor.borrow_mut() =
+                            result.get("nextCursor").filter(|v| !v.is_null()).cloned();
                         let messages: Vec<MessageInfo> = result
                             .get("messages")
                             .cloned()
                             .and_then(|v| serde_json::from_value(v).ok())
                             .unwrap_or_default();
-                        if !same_message_list(state, &chat_mid, &messages) {
-                            apply_messages(state, messages);
+                        if older {
+                            prepend_messages(state, messages);
+                        } else if !same_message_list(state, &chat_mid, &messages) {
+                            // A live message can arrive while the first page is in flight.
+                            let mut merged: HashMap<String, MessageInfo> =
+                                messages.into_iter().map(|m| (m.id.clone(), m)).collect();
+                            for (id, message) in state.message_index.borrow().iter() {
+                                merged.entry(id.clone()).or_insert_with(|| message.clone());
+                            }
+                            apply_messages(state, merged.into_values().collect());
                         }
                     }
                 }

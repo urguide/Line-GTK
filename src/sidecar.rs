@@ -256,6 +256,13 @@ impl Sidecar {
         )
     }
 
+    pub fn fetch_older_messages(&self, chat_mid: &str, before: Value) -> Result<u64> {
+        self.request(
+            "fetch_messages",
+            Some(json!({ "chatMid": chat_mid, "limit": 20, "before": before })),
+        )
+    }
+
     pub fn send_message(
         &self,
         chat_mid: &str,

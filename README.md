@@ -9,6 +9,8 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends
+- [x] 20-message history pages on upward scroll, merged disk cache (360 days in Smart mode)
+- [x] Shared serial media download queue with a 500 ms gap between tasks
 - [x] Right-click Reply with a quoted-message preview
 - [x] Unsend your messages; sync unsends from other devices and participants
 - [x] Photos, video, voice messages, files

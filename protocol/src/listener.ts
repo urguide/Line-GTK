@@ -1,6 +1,7 @@
 import type { Client, TalkMessage } from "@evex/linejs";
 import * as calls from "./calls.ts";
 import { unsendFromOperation } from "./unsend.ts";
+import { packRaw } from "./history.ts";
 
 type Json = Record<string, unknown>;
 
@@ -9,6 +10,7 @@ export type ListenerRuntime = {
   isListening: () => boolean;
   setListening: (listening: boolean) => void;
   invalidateMessages: (chatMid: string) => void;
+  saveMessages: (chatMid: string, rows: Json[]) => Promise<void>;
   applyUnsent: (chatMid: string, messageId: string) => Promise<void>;
   isUnsent: (messageId: unknown) => boolean;
   summarizeTalkMessage: (
@@ -58,6 +60,10 @@ export function createListener(runtime: ListenerRuntime) {
           deliveredTime: message.createdTime,
         });
         emitEvent("message", { message: { ...message, imagePath: null } });
+        await runtime.saveMessages(peer, [{
+          ...message,
+          rawMessage: packRaw(tm.raw),
+        }]);
         await upsertChatFromMessage(message);
         if (message.needsMedia) {
           // Use the live TalkMessage.getData path — history refetch often misses

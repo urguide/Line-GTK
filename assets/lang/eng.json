@@ -75,7 +75,7 @@
   "settings_cache": "Cache",
   "cache_retention": "Keep cache",
   "cache_retention_desc": "How long chats/messages stay warm. Stickers, photos, and avatars stay on disk until you clear them.",
-  "cache_retention_subtitle": "Smart balances speed and freshness",
+  "cache_retention_subtitle": "Smart keeps chats and messages cached on disk for 360 days",
   "cache_ret_smart": "Smart (recommended)",
   "cache_ret_day": "1 day",
   "cache_ret_week": "1 week",

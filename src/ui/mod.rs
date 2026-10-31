@@ -164,6 +164,10 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         unsent_msg_ids: Rc::new(RefCell::new(HashSet::new())),
         message_rows: Rc::new(RefCell::new(HashMap::new())),
         message_generation: Rc::new(RefCell::new(0)),
+        history_generation: Rc::new(RefCell::new(0)),
+        history_cursor: Rc::new(RefCell::new(None)),
+        history_loading: Rc::new(RefCell::new(false)),
+        history_has_more: Rc::new(RefCell::new(false)),
         last_incoming_id: Rc::new(RefCell::new(None)),
         read_upto: Rc::new(RefCell::new(HashMap::new())),
         restored_last_chat: Rc::new(RefCell::new(false)),
@@ -906,6 +910,9 @@ fn wire_scroll_pin(state: &AppState) {
                 *s_scroll.stick_bottom.borrow_mut() = false;
             }
         }
+        if dy < -0.1 && s_scroll.message_scroll.vadjustment().value() <= 80.0 {
+            load_older_messages(&s_scroll);
+        }
         glib::Propagation::Proceed
     });
     state.message_scroll.add_controller(wheel);
@@ -919,6 +926,9 @@ fn wire_scroll_pin(state: &AppState) {
         }
         let target = (adj.upper() - adj.page_size()).max(0.0);
         let near_bottom = adj.value() + 120.0 >= target;
+        if adj.value() <= 80.0 && !*s.stick_bottom.borrow() {
+            load_older_messages(&s);
+        }
         if near_bottom {
             if !*s.stick_bottom.borrow() {
                 *s.stick_bottom.borrow_mut() = true;
@@ -1566,17 +1576,24 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     set_msg_state(state, "loading", None);
     clear_messages(state);
     *state.msg_list_fp.borrow_mut() = None;
-    match state.sidecar.fetch_messages(&chat.mid, 40) {
+    *state.history_generation.borrow_mut() += 1;
+    *state.history_cursor.borrow_mut() = None;
+    *state.history_loading.borrow_mut() = true;
+    *state.history_has_more.borrow_mut() = false;
+    match state.sidecar.fetch_messages(&chat.mid, 20) {
         Ok(id) => {
             state.pending.borrow_mut().insert(
                 id,
                 Pending::FetchMessages {
                     chat_mid: chat.mid.clone(),
+                    generation: *state.history_generation.borrow(),
+                    older: false,
                 },
             );
         }
         Err(e) => {
             set_msg_state(state, "empty", Some(&format!("Failed: {e}")));
+            *state.history_loading.borrow_mut() = false;
             toast(
                 state,
                 &crate::i18n::tf("fetch_failed", &[("error", &e.to_string())]),

@@ -87,6 +87,10 @@ pub(super) struct AppState {
     pub unsent_msg_ids: Rc<RefCell<HashSet<String>>>,
     pub message_rows: Rc<RefCell<HashMap<String, gtk::ListBoxRow>>>,
     pub message_generation: Rc<RefCell<u64>>,
+    pub history_generation: Rc<RefCell<u64>>,
+    pub history_cursor: Rc<RefCell<Option<serde_json::Value>>>,
+    pub history_loading: Rc<RefCell<bool>>,
+    pub history_has_more: Rc<RefCell<bool>>,
     pub last_incoming_id: Rc<RefCell<Option<String>>>,
     pub read_upto: Rc<RefCell<HashMap<String, String>>>,
     pub restored_last_chat: Rc<RefCell<bool>>,
@@ -172,6 +176,8 @@ pub(super) enum Pending {
     ListFriends,
     FetchMessages {
         chat_mid: String,
+        generation: u64,
+        older: bool,
     },
     Send {
         chat_mid: String,

@@ -75,6 +75,26 @@ impl VirtualMessageList {
         self.store.remove_all();
     }
 
+    pub fn len(&self) -> u32 {
+        self.store.n_items()
+    }
+
+    pub fn move_tail_to_front(&self, start: u32) {
+        let tail: Vec<gtk::glib::BoxedAnyObject> = (start..self.store.n_items())
+            .filter_map(|i| {
+                self.store
+                    .item(i)
+                    .and_downcast::<gtk::glib::BoxedAnyObject>()
+            })
+            .collect();
+        self.store.splice(
+            start,
+            tail.len() as u32,
+            &[] as &[gtk::glib::BoxedAnyObject],
+        );
+        self.store.splice(0, 0, &tail);
+    }
+
     pub fn first_child(&self) -> Option<gtk::Widget> {
         self.item_at(0)
     }

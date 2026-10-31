@@ -25,7 +25,7 @@ export function policyFor(retention: string): CachePolicy {
     case "forever":
       return policy(FOREVER_MS, WEEK_MS, 360, 120, 360, 0);
     default:
-      return policy(14 * DAY_MS, DAY_MS, 30, 20, 30, WEEK_MS, 30 * DAY_MS);
+      return policy(360 * DAY_MS, DAY_MS, 30, 20, 30, WEEK_MS);
   }
 }
 
