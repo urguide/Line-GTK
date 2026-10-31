@@ -148,7 +148,7 @@ impl Ipc {
             Ok(p["owned"].clone())
         };
         self.active(generation)?;
-        let result = line_gtk_core::stickers::load(
+        let mut result = line_gtk_core::stickers::load(
             owned,
             &p["previous"],
             &p["recent"],
@@ -183,6 +183,18 @@ impl Ipc {
                     .into_owned())
             },
         )?;
+        line_gtk_core::stickers::apply_pack_icons(&mut result, |package| {
+            let path = line_gtk_core::sticker_cache::pack_icon(
+                &self.data.join("cache/stickers"),
+                package,
+                |url, dest| {
+                    self.active(generation)?;
+                    self.asset(url, dest, generation)?;
+                    Ok(line_gtk_core::sticker_cache::Fetch::Saved)
+                },
+            )?;
+            Ok(path.to_string_lossy().into_owned())
+        });
         self.active(generation)?;
         Ok(result)
     }

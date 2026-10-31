@@ -72,6 +72,55 @@ fn present(path: &Path) -> bool {
     path.metadata().is_ok_and(|m| m.is_file() && m.len() > 0)
 }
 
+pub fn pack_icon_urls(package: &str) -> Result<Vec<String>> {
+    if package.is_empty() || !package.bytes().all(|b| b.is_ascii_digit()) {
+        bail!("invalid sticker package ID");
+    }
+    Ok(
+        ["android/main.png", "ANDROID/main.png", "android/tab_on.png"]
+            .iter()
+            .map(|path| {
+                format!("https://stickershop.line-scdn.net/stickershop/v1/product/{package}/{path}")
+            })
+            .collect(),
+    )
+}
+
+fn png(path: &Path) -> bool {
+    use std::io::Read;
+    let mut signature = [0; 8];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut signature))
+        .is_ok()
+        && signature == *b"\x89PNG\r\n\x1a\n"
+}
+
+/// Use one on-disk icon for all CDN variants. Failed/invalid candidates cannot
+/// be mistaken for a successful cache entry on the next request or restart.
+pub fn pack_icon(
+    directory: &Path,
+    package: &str,
+    mut fetch: impl FnMut(&str, &Path) -> Result<Fetch>,
+) -> Result<PathBuf> {
+    let urls = pack_icon_urls(package)?;
+    let dest = directory.join(format!("pack-{package}.png"));
+    if png(&dest) {
+        return Ok(dest);
+    }
+    if dest.exists() {
+        std::fs::remove_file(&dest)?;
+    }
+    for url in urls {
+        if matches!(fetch(&url, &dest), Ok(Fetch::Saved)) && png(&dest) {
+            return Ok(dest);
+        }
+        if dest.exists() {
+            std::fs::remove_file(&dest)?;
+        }
+    }
+    bail!("sticker package icon unavailable")
+}
+
 /// All fetching remains sequential. A transient animation error falls back to
 /// static without poisoning the persistent miss cache. Clock is supplied by the
 /// host, permitting expiry tests without sleeping or altering filesystem times.

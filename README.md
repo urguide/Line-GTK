@@ -47,6 +47,9 @@ Animation and static CDN paths are tried sequentially using the legacy Android,
 uppercase ANDROID and iPhone variants (including `@2x` names). An animation miss
 is persisted only when every candidate reports 404/410; mixed transient failures
 remain retryable. Older Android-only miss markers are revalidated across all paths.
+Package tab icons use their own disk cache and sequential `android/main.png`,
+`ANDROID/main.png`, `android/tab_on.png` fallbacks. If all fail, only that tab
+uses its first sticker image; other packages and the Recent tab remain usable.
 Rust resolves omitted sticker versions from the owned-package cache/API (legacy
 version 1 fallback if lookup is unavailable). Explicit versions take precedence.
 Ownership rejection removes the matching recent sticker and deletes ownership

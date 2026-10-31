@@ -50,6 +50,25 @@ fn existing(path: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Recent is a synthetic tab. Real packages prefer their dedicated CDN icon;
+/// failure falls back to the first sticker without discarding the package.
+pub fn apply_pack_icons(catalog: &mut Value, mut icon: impl FnMut(&str) -> Result<String>) {
+    for pack in catalog["packs"].as_array_mut().into_iter().flatten() {
+        let package = string(&pack["id"]);
+        if package == "__recent__" {
+            continue;
+        }
+        let image = icon(&package).ok().or_else(|| {
+            pack["stickers"]
+                .as_array()
+                .and_then(|rows| rows.first())
+                .and_then(|s| s["imagePath"].as_str())
+                .map(str::to_owned)
+        });
+        pack["iconPath"] = json!(image);
+    }
+}
+
 pub fn load(
     owned: Result<Value>,
     previous: &Value,
