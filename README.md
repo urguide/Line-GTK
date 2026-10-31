@@ -114,6 +114,11 @@ Video cache reuse supports MP4, WebM, MOV, MKV and M4V originals, with their
 existing thumbnails. Both saved paths and legacy filename discovery validate
 nonempty regular files inside the media cache (including symlink resolution),
 so reopening a cached non-MP4 video does not request another download.
+Generic attachments retain a short ASCII basename extension (for example
+`123.pdf` or `123.txt`) so existing file viewers receive a usable preview path.
+Sender-controlled directory components are never used in cache paths; missing
+suffixes use PDF/plain-text MIME hints or `.bin`. Older `.bin` downloads with a
+known filename extension are renamed locally without re-downloading.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

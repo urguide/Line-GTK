@@ -306,6 +306,8 @@ impl Transport for Ipc {
             .as_str()
             .map(PathBuf::from)
             .and_then(|p| self.cached_media_file(&p));
+        let attachment_ext =
+            line_gtk_core::attachments::file_extension(row["fileName"].as_str(), "");
         if kind == "VIDEO"
             && file.as_ref().is_some_and(|p| {
                 !p.extension()
@@ -315,7 +317,12 @@ impl Transport for Ipc {
         {
             file = None;
         }
-        if file.is_none() {
+        if file.is_none() && kind == "FILE" {
+            file = self
+                .cached_media_file(&dir.join(format!("{id}.{attachment_ext}")))
+                .or_else(|| self.cached_media_file(&dir.join(format!("{id}.bin"))));
+        }
+        if file.is_none() && kind != "FILE" {
             // Recover binaries downloaded before the SQLite migration.
             for ext in [
                 "mp4",
@@ -356,7 +363,11 @@ impl Transport for Ipc {
                 bail!("invalid transfer location");
             }
             let mime = downloaded["mime"].as_str().unwrap_or_default();
-            let ext = if mime.contains("png") {
+            let generic_ext =
+                line_gtk_core::attachments::file_extension(row["fileName"].as_str(), mime);
+            let ext = if kind == "FILE" {
+                generic_ext.as_str()
+            } else if mime.contains("png") {
                 "png"
             } else if mime.contains("gif") {
                 "gif"
@@ -375,10 +386,11 @@ impl Transport for Ipc {
             } else {
                 "bin"
             };
-            if ![
-                "jpg", "png", "gif", "webp", "mp4", "m4a", "mp3", "ogg", "bin",
-            ]
-            .contains(&ext)
+            if kind != "FILE"
+                && ![
+                    "jpg", "png", "gif", "webp", "mp4", "m4a", "mp3", "ogg", "bin",
+                ]
+                .contains(&ext)
             {
                 bail!("invalid media extension");
             }
@@ -390,7 +402,19 @@ impl Transport for Ipc {
             std::fs::rename(temporary, &dest)?;
             file = Some(dest);
         }
-        let file = file.context("media unavailable")?;
+        let mut file = file.context("media unavailable")?;
+        // Repair older .bin downloads locally so PDF/text preview works without
+        // re-fetching the original. Rename replaces symlinks, never follows them.
+        if kind == "FILE"
+            && attachment_ext != "bin"
+            && file.extension().and_then(|s| s.to_str()) == Some("bin")
+        {
+            let named = dir.join(format!("{id}.{attachment_ext}"));
+            std::fs::rename(&file, &named)?;
+            file = self
+                .cached_media_file(&named)
+                .context("invalid renamed attachment")?;
+        }
         updated["filePath"] = json!(file);
         updated["needsMedia"] = json!(false);
         match kind {
@@ -725,6 +749,134 @@ mod tests {
         let result = ipc.materialize(&json!({"id":"123","contentType":"VIDEO"}), 1);
         assert_eq!(result.unwrap_err().to_string(), "protocol unavailable");
         assert_eq!(std::fs::read(&outside).unwrap(), b"private");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn downloaded_documents_keep_preview_extensions_and_hit_cache_without_rpc() {
+        for (index, (name, mime, ext)) in [
+            ("報告.PDF", "application/octet-stream", "pdf"),
+            ("notes.txt", "application/octet-stream", "txt"),
+            ("../../report.pdf", "application/pdf", "pdf"),
+            ("notes.txt/../../escape", "application/octet-stream", "bin"),
+            ("document", "application/pdf", "pdf"),
+            ("notes", "text/plain; charset=utf-8", "txt"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let root = std::env::temp_dir().join(format!(
+                "line-document-cache-{}-{index}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(root.join("cache/transfer")).unwrap();
+            let transferred = root.join("cache/transfer/document.part");
+            std::fs::write(&transferred, b"original document bytes").unwrap();
+            let mut child = Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let replies: Replies = Arc::default();
+            let waiting = replies.clone();
+            let responder = std::thread::spawn(move || {
+                let mut line = String::new();
+                BufReader::new(stdout).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let id = request["id"].as_u64().unwrap();
+                waiting
+                    .lock()
+                    .unwrap()
+                    .remove(&id)
+                    .unwrap()
+                    .send(Response {
+                        id: Some(id),
+                        ok: Some(true),
+                        result: Some(json!({"path":transferred,"mime":mime})),
+                        error: None,
+                        event: None,
+                        extra: Value::Null,
+                    })
+                    .unwrap();
+                assert_eq!(request["method"], "bridge_download");
+            });
+            let (events, _) = async_channel::unbounded();
+            let ipc = Ipc {
+                stdin: Arc::new(Mutex::new(child.stdin.take())),
+                replies,
+                ids: Arc::new(AtomicU64::new(1)),
+                generation: Arc::new(AtomicU64::new(1)),
+                events,
+                data: root.clone(),
+                asset_at: Mutex::new(None),
+            };
+            let row = json!({"id":"123","contentType":"FILE","fileName":name});
+            let loaded = ipc.materialize(&row, 1);
+            let _ = child.kill();
+            let _ = child.wait();
+            responder.join().unwrap();
+            let mut loaded = loaded.unwrap();
+            let dest = root.join(format!("cache/media/123.{ext}"));
+            assert_eq!(loaded["filePath"], json!(dest));
+            assert_eq!(std::fs::read(&dest).unwrap(), b"original document bytes");
+            assert_eq!(loaded["fileName"], name);
+            *ipc.stdin.lock().unwrap() = None;
+            assert_eq!(
+                ipc.materialize(&loaded, 1).unwrap()["filePath"],
+                json!(dest)
+            );
+            // Filename-derived paths can also be recovered without saved metadata.
+            if name.contains('.') {
+                loaded["filePath"] = Value::Null;
+                assert_eq!(
+                    ipc.materialize(&loaded, 1).unwrap()["filePath"],
+                    json!(dest)
+                );
+            }
+            assert_eq!(ipc.ids.load(Ordering::SeqCst), 2);
+            assert!(!root.join("report.pdf").exists());
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn old_bin_document_is_renamed_locally_and_escaping_named_cache_is_rejected() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("line-bin-document-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("cache/media")).unwrap();
+        let old = root.join("cache/media/123.bin");
+        std::fs::write(&old, b"cached pdf").unwrap();
+        let outside = root.join("private.txt");
+        std::fs::write(&outside, b"private").unwrap();
+        symlink(&outside, root.join("cache/media/456.txt")).unwrap();
+        let (events, _) = async_channel::unbounded();
+        let ipc = Ipc {
+            stdin: Arc::new(Mutex::new(None)),
+            replies: Arc::default(),
+            ids: Arc::new(AtomicU64::new(1)),
+            generation: Arc::new(AtomicU64::new(1)),
+            events,
+            data: root.clone(),
+            asset_at: Mutex::new(None),
+        };
+        let loaded = ipc
+            .materialize(
+                &json!({"id":"123","contentType":"FILE","fileName":"report.pdf","filePath":old}),
+                1,
+            )
+            .unwrap();
+        assert!(loaded["filePath"].as_str().unwrap().ends_with("123.pdf"));
+        assert!(!old.exists());
+        assert_eq!(ipc.ids.load(Ordering::SeqCst), 1);
+        assert!(
+            ipc.materialize(
+                &json!({"id":"456","contentType":"FILE","fileName":"secret.txt"}),
+                1
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(outside).unwrap(), b"private");
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

@@ -5,6 +5,35 @@ use serde_json::{Value, json};
 pub const FALLBACK_DURATION_MS: i64 = 1919;
 pub const VIDEO_EXTENSIONS: [&str; 5] = ["mp4", "webm", "mov", "mkv", "m4v"];
 
+/// Only a short ASCII suffix from the basename becomes part of a cache path.
+/// The original filename remains display metadata, never a filesystem path.
+pub fn file_extension(filename: Option<&str>, mime: &str) -> String {
+    if let Some(name) = filename {
+        let basename = name.rsplit(['/', '\\']).next().unwrap_or_default();
+        if let Some((stem, extension)) = basename.rsplit_once('.')
+            && !stem.is_empty()
+            && !extension.is_empty()
+            && extension.len() <= 8
+            && extension.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            return extension.to_ascii_lowercase();
+        }
+    }
+    match mime
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "application/pdf" => "pdf",
+        "text/plain" => "txt",
+        _ => "bin",
+    }
+    .to_owned()
+}
+
 pub fn video_extension(extension: &str) -> bool {
     VIDEO_EXTENSIONS
         .iter()
