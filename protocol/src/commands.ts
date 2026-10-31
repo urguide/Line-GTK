@@ -281,6 +281,7 @@ export function createCommandService(runtime: CommandRuntime) {
           count: chatCache.chats.length,
           cached: true,
         });
+        hydrateAvatars(chatCache.chats);
         return;
       }
 
@@ -331,7 +332,7 @@ export function createCommandService(runtime: CommandRuntime) {
       // 2) Contacts + bots/OA (getContacts mids — fetchUsers misses bots)
       try {
         await loadDiskContacts();
-        await refreshContactIndex();
+        await refreshContactIndex(force);
         for (const [mid, info] of contactIndex) {
           const prev = byMid.get(mid);
           if (prev) {
@@ -397,8 +398,9 @@ export function createCommandService(runtime: CommandRuntime) {
             lastActivity: prev?.lastActivity ?? 0,
             unread: prev?.unread ?? 0,
             preview: prev?.preview ?? "",
-            picturePath: prev?.picturePath ?? null,
-            avatarPath: prev?.avatarPath ?? null,
+            picturePath: picturePathOf(chat) ?? prev?.picturePath ?? null,
+            avatarPath: prev?.avatarPath ??
+              await existingFile(join(avatarDir, `${chat.mid}.jpg`)),
           });
         }
       } catch (e) {

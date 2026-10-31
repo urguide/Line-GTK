@@ -1,6 +1,10 @@
 export function friendName(user: { mid: string; raw: unknown }): string {
-  const raw = user.raw as { contact?: { displayName?: string } };
-  return raw.contact?.displayName || user.mid;
+  const raw = user.raw as {
+    contact?: { displayName?: string };
+    targetProfileDetail?: { profileName?: string };
+  } | null;
+  return raw?.targetProfileDetail?.profileName || raw?.contact?.displayName ||
+    user.mid;
 }
 
 export function profileUrl(picturePath?: string | null): string | null {
@@ -11,19 +15,32 @@ export function profileUrl(picturePath?: string | null): string | null {
   }${picturePath}`;
 }
 
-export function picturePathOf(
-  profile: Record<string, unknown> | null | undefined,
-): string | null {
-  if (!profile) return null;
-  const candidates: unknown[] = [
-    profile.picturePath,
-    profile.pictureStatus,
-    (profile as { picture?: { path?: string } }).picture?.path,
-    (profile as { raw?: { contact?: { picturePath?: string } } }).raw?.contact
-      ?.picturePath,
+export function picturePathOf(profile: unknown): string | null {
+  const record = (value: unknown): Record<string, unknown> =>
+    value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const root = record(profile);
+  const raw = record(root.raw);
+  // linejs wraps group data in raw; User.raw uses targetProfileDetail in v3.
+  const sources = [
+    root,
+    record(root.targetProfileDetail),
+    raw,
+    record(raw.targetProfileDetail),
+    record(raw.contact),
   ];
-  for (const raw of candidates) {
-    if (typeof raw === "string" && raw.trim()) return raw.trim();
+  for (const source of sources) {
+    for (
+      const candidate of [
+        source.picturePath,
+        source.pictureStatus,
+        record(source.picture).path,
+        source.thumbnailUrl,
+      ]
+    ) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
   }
   return null;
 }
