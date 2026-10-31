@@ -17,6 +17,9 @@
   <url type="bugtracker">https://github.com/MidnightTale/Line-GTK/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.8.1" date="2026-11-01">
+      <description><p>Automated release with improvements and fixes.</p></description>
+    </release>
     <release version="0.1.2" date="2026-08-02">
       <description>
         <p>Adds hardened persistence and protocol recovery, offline packaging, diagnostics, virtualized conversations, modularized UI and protocol services, and Flatpak distribution.</p>
