@@ -1675,7 +1675,7 @@ dependencies = [
 
 [[package]]
 name = "line-gtk"
-version = "0.1.2"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-channel",
