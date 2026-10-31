@@ -55,6 +55,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
         flex: "ข้อความ Flex",
         message: "ข้อความ",
         tap: "แตะเพื่อเปิด",
+        unsent: "ยกเลิกข้อความแล้ว",
       }
       : {
         you: "You",
@@ -67,6 +68,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
         flex: "Flex message",
         message: "Message",
         tap: "Tap to open",
+        unsent: "Message unsent",
       };
   }
 

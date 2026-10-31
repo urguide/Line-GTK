@@ -1,6 +1,10 @@
 {
   "app_title": "LINE GTK",
   "app_name": "LINE GTK",
+  "message_actions": "การจัดการข้อความ",
+  "unsend_message": "ยกเลิกข้อความ",
+  "message_unsent": "ยกเลิกข้อความแล้ว",
+  "unsend_failed": "ไม่สามารถยกเลิกข้อความได้: {error}",
   "chats": "แชท",
   "send": "ส่ง",
   "type_message": "พิมพ์ข้อความ…",

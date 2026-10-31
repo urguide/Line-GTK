@@ -67,6 +67,9 @@ pub(super) struct AppState {
     pub msg_created: Rc<RefCell<HashMap<String, i64>>>,
     pub last_msg_day: Rc<RefCell<Option<String>>>,
     pub seen_msg_ids: Rc<RefCell<HashSet<String>>>,
+    pub unsent_msg_ids: Rc<RefCell<HashSet<String>>>,
+    pub message_rows: Rc<RefCell<HashMap<String, gtk::ListBoxRow>>>,
+    pub message_generation: Rc<RefCell<u64>>,
     pub last_incoming_id: Rc<RefCell<Option<String>>>,
     pub read_upto: Rc<RefCell<HashMap<String, String>>>,
     pub restored_last_chat: Rc<RefCell<bool>>,
@@ -158,6 +161,10 @@ pub(super) enum Pending {
         placeholder_id: String,
     },
     ListStickers,
+    Unsend {
+        chat_mid: String,
+        message_id: String,
+    },
     DownloadMedia {
         message_id: String,
         action: String,

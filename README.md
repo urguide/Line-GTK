@@ -9,6 +9,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends
+- [x] Unsend your messages; sync unsends from other devices and participants
 - [x] Photos, video, voice messages, files
 - [x] Paste and drag-and-drop attachments
 - [x] In-app viewers (image, video, PDF, text)
@@ -60,6 +61,13 @@ cd Line-GTK
 cargo build --release
 ./target/release/line-gtk
 ```
+
+## Unsend messages
+
+To unsend a sent message, right-click its bubble or open the **⋮** menu next
+to its timestamp and choose **Unsend**. LINE enforces ownership and its current
+unsend time limit; if it rejects the request, the message remains visible and
+the error is shown. Successful unsends are also applied to local message caches.
 
 ## Development checks
 

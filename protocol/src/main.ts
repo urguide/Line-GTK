@@ -18,6 +18,7 @@ import { createStickerService } from "./stickers.ts";
 import { createCommandService } from "./commands.ts";
 import { createListener } from "./listener.ts";
 import { createMessageView } from "./message_view.ts";
+import { createUnsendService, UnsentMessages } from "./unsend.ts";
 
 type Json = Record<string, unknown>;
 
@@ -54,6 +55,8 @@ const chatCachePath = join(cacheDir, "chats.json");
 const contactCachePath = join(cacheDir, "contacts.json");
 const msgDiskDir = join(cacheDir, "messages");
 await ensurePrivateDir(msgDiskDir);
+const unsentMessages = new UnsentMessages(join(cacheDir, "unsent.json"));
+await unsentMessages.load();
 
 let cacheRetention = (Deno.env.get("LINE_GTK_CACHE_RETENTION") || "smart")
   .toLowerCase();
@@ -117,6 +120,10 @@ function emit(obj: Json) {
   }
 }
 function emitEvent(event: string, payload: Json = {}) {
+  if (
+    (event === "media_ready" || event === "media_failed") &&
+    unsentMessages.has(payload.messageId)
+  ) return;
   emit({ event, ...payload });
 }
 function ok(id: number | string | null, result: unknown = {}) {
@@ -210,7 +217,18 @@ const messageView = createMessageView({
   uiMediaPath,
   stickerDir,
 });
-const { previewLang, previewLine, extractFlex, forUiMessages } = messageView;
+const { previewLang, extractFlex } = messageView;
+function previewLine(message: Json): string {
+  return unsentMessages.has(message.id)
+    ? previewLang().unsent
+    : messageView.previewLine(message);
+}
+async function forUiMessages(messages: Json[]): Promise<Json[]> {
+  // Filter again after media lookup, as an unsend can arrive during an await.
+  return unsentMessages.filter(
+    await messageView.forUiMessages(unsentMessages.filter(messages)),
+  );
+}
 
 const stickers = createStickerService({
   getClient: () => client,
@@ -272,6 +290,7 @@ type BoxCursor = {
   deliveredTime: bigint | number;
 };
 const boxCursor = new Map<string, BoxCursor>();
+const previewMessageIds = new Map<string, string>();
 
 const listener = createListener({
   getClient: () => client,
@@ -280,6 +299,8 @@ const listener = createListener({
     listening = next;
   },
   invalidateMessages: (chatMid) => msgCache.delete(chatMid),
+  applyUnsent,
+  isUnsent: (id) => unsentMessages.has(id),
   summarizeTalkMessage,
   storeBoxCursor,
   upsertChatFromMessage,
@@ -287,6 +308,44 @@ const listener = createListener({
   upsertChatFromContact,
   emitEvent,
 });
+
+const unsendMessage = createUnsendService({
+  getClient: () => client,
+  applyUnsent,
+});
+
+async function applyUnsent(chatMid: string, messageId: string): Promise<void> {
+  // Mark synchronously before notifying GTK or awaiting any disk I/O.
+  const persisted = unsentMessages.mark(messageId).catch((error) => {
+    console.error("[unsent-cache]", error);
+  });
+  emitEvent("message_unsent", { chatMid, messageId });
+  const cached = msgCache.get(chatMid);
+  if (cached) cached.messages = unsentMessages.filter(cached.messages);
+  try {
+    const disk = await loadDiskMessages(chatMid);
+    if (disk) await saveDiskMessages(chatMid, disk);
+    // Only replace the preview when the removed message was the latest one.
+    if (
+      (previewMessageIds.get(chatMid) ??
+        String(boxCursor.get(chatMid)?.messageId ?? "")) === messageId
+    ) {
+      const preview = previewLang().unsent;
+      const row = chatCache?.chats.find((chat) => chat.mid === chatMid);
+      if (row) row.preview = preview;
+      emitEvent("chat_preview", {
+        mid: chatMid,
+        preview,
+        lastActivity: row?.lastActivity ?? 0,
+      });
+      if (chatCache) await atomicWriteJson(chatCachePath, chatCache);
+    }
+  } catch (error) {
+    // A local cache failure must not report a successful server unsend as failed.
+    console.error("[unsend-cache-cleanup]", error);
+  }
+  await persisted;
+}
 
 const commands = createCommandService({
   getClient: () => client,
@@ -618,7 +677,7 @@ async function loadDiskMessages(chatMid: string): Promise<Json[] | null> {
       await Deno.readTextFile(join(msgDiskDir, `${chatMid}.json`)),
     );
     if (Date.now() - Number(raw.at || 0) > cachePolicy().diskMsg) return null;
-    if (Array.isArray(raw.messages)) return raw.messages as Json[];
+    if (Array.isArray(raw.messages)) return unsentMessages.filter(raw.messages);
   } catch { /* miss */ }
   return null;
 }
@@ -627,7 +686,7 @@ async function saveDiskMessages(chatMid: string, messages: Json[]) {
   try {
     await atomicWriteJson(join(msgDiskDir, `${chatMid}.json`), {
       at: Date.now(),
-      messages,
+      messages: unsentMessages.filter(messages),
     });
   } catch (error) {
     console.error("[messages-cache]", chatMid, error);
@@ -969,7 +1028,7 @@ async function hydrateMedia(
   const epochOk = () => isolated || mediaEpoch.get(chatMid) === epoch;
   const gen = workGen;
   const pending = messages
-    .filter((m) => m.needsMedia && m.id)
+    .filter((m) => m.needsMedia && m.id && !unsentMessages.has(m.id))
     .slice()
     .reverse(); // newest first
   if (!pending.length) return;
@@ -984,6 +1043,7 @@ async function hydrateMedia(
   };
 
   const work = async (m: Json) => {
+    if (unsentMessages.has(m.id)) return;
     if (!client || !stdoutAlive || workGen !== gen) return;
     if (!epochOk()) return;
     try {
@@ -1242,6 +1302,7 @@ async function hydratePreviews(chats: ChatRow[]) {
       const summary = await summarizeRawMessage(raw, { withMedia: false });
       if (workGen !== gen || !stdoutAlive) return;
       const preview = previewLine(summary);
+      previewMessageIds.set(c.mid, String(summary.id ?? ""));
       c.preview = preview;
       if (chatCache) {
         const row = chatCache.chats.find((x) => x.mid === c.mid);
@@ -1397,8 +1458,10 @@ async function resolveContactInfo(mid: string): Promise<{
 }
 
 async function upsertChatFromMessage(message: Json) {
+  if (unsentMessages.has(message.id)) return;
   const peer = message.mine ? String(message.to) : String(message.from);
   if (!peer) return;
+  previewMessageIds.set(peer, String(message.id ?? ""));
   const preview = previewLine(message);
   const activity = Number(message.createdTime ?? 0);
   if (!chatCache) chatCache = { at: Date.now(), chats: [] };
@@ -1429,6 +1492,7 @@ async function upsertChatFromMessage(message: Json) {
     }
   }
 
+  if (unsentMessages.has(message.id)) row.preview = previewLang().unsent;
   chatCache.chats = [row, ...chatCache.chats.filter((c) => c.mid !== peer)];
   chatCache.at = Date.now();
   try {
@@ -1438,7 +1502,11 @@ async function upsertChatFromMessage(message: Json) {
   }
 
   emitEvent("chat_upsert", { chat: row, created });
-  emitEvent("chat_preview", { mid: peer, preview, lastActivity: activity });
+  emitEvent("chat_preview", {
+    mid: peer,
+    preview: row.preview,
+    lastActivity: activity,
+  });
   if (row.picturePath && !row.avatarPath) {
     hydrateAvatars([row]);
   }
@@ -1666,6 +1734,13 @@ async function handle(req: Json) {
           String(params.text ?? ""),
         );
         break;
+      case "unsend_message": {
+        const chatMid = String(params.chatMid ?? "");
+        const messageId = String(params.messageId ?? "");
+        await unsendMessage(chatMid, messageId);
+        ok(id, { chatMid, messageId });
+        break;
+      }
       case "send_audio":
         await outgoingMedia.sendAudio(
           id,

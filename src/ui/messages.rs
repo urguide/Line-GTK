@@ -20,6 +20,7 @@ pub(super) fn same_message_list(
 
 pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     clear_messages(state);
+    messages.retain(|msg| !state.unsent_msg_ids.borrow().contains(&msg.id));
     state.media_queue.borrow_mut().clear();
     *state.stick_bottom.borrow_mut() = true;
     messages.sort_by_key(|m| m.created_time);
@@ -55,7 +56,11 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     let chat_mid = state.current_chat.borrow().clone();
     let state_c = state.clone();
     let batch = Rc::new(RefCell::new(messages));
+    let generation = *state.message_generation.borrow();
     glib::idle_add_local(move || {
+        if *state_c.message_generation.borrow() != generation {
+            return glib::ControlFlow::Break;
+        }
         let mut left = batch.borrow_mut();
         let take = left.len().min(14);
         if take == 0 {
@@ -78,6 +83,9 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
 }
 
 pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
+    if state.unsent_msg_ids.borrow().contains(&msg.id) {
+        return;
+    }
     if !msg.id.is_empty() && !state.seen_msg_ids.borrow_mut().insert(msg.id.clone()) {
         return;
     }
@@ -331,7 +339,16 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
                 .borrow_mut()
                 .insert(msg.id.clone(), status.clone());
         }
-        col.append(&status);
+        let footer = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .halign(gtk::Align::End)
+            .build();
+        footer.append(&status);
+        if !is_pending && !msg.id.is_empty() {
+            append_unsend_menu(state, &footer, &bubble, msg);
+        }
+        col.append(&footer);
         outer.append(&gtk::Box::builder().hexpand(true).build());
         outer.append(&col);
     } else {
@@ -347,6 +364,12 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     }
 
     row.set_child(Some(&outer));
+    if !msg.id.is_empty() {
+        state
+            .message_rows
+            .borrow_mut()
+            .insert(msg.id.clone(), row.clone());
+    }
     if is_pending {
         row.add_css_class("line-msg-pending-row");
         state
@@ -366,6 +389,112 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         });
     }
     list.append(&row);
+}
+
+fn append_unsend_menu(state: &AppState, footer: &gtk::Box, bubble: &gtk::Box, msg: &MessageInfo) {
+    let Some(chat_mid) = state.current_chat.borrow().clone() else {
+        return;
+    };
+    let popover = gtk::Popover::new();
+    let unsend = gtk::Button::with_label(&crate::i18n::t("unsend_message"));
+    unsend.add_css_class("flat");
+    popover.set_child(Some(&unsend));
+    let menu = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text(crate::i18n::t("message_actions"))
+        .css_classes(["flat", "circular"])
+        .popover(&popover)
+        .build();
+    footer.append(&menu);
+
+    let s = state.clone();
+    let message_id = msg.id.clone();
+    let popup = popover.downgrade();
+    unsend.connect_clicked(move |_| {
+        if let Some(popup) = popup.upgrade() {
+            popup.popdown();
+        }
+        if s.unsent_msg_ids.borrow().contains(&message_id)
+            || s.pending.borrow().values().any(|pending| {
+                matches!(pending, Pending::Unsend { message_id: id, .. } if id == &message_id)
+            })
+        {
+            return;
+        }
+        if !*s.session_ready.borrow() {
+            toast(&s, &crate::i18n::t("still_restoring"));
+            return;
+        }
+        match s.sidecar.unsend_message(&chat_mid, &message_id) {
+            Ok(id) => {
+                s.pending.borrow_mut().insert(
+                    id,
+                    Pending::Unsend {
+                        chat_mid: chat_mid.clone(),
+                        message_id: message_id.clone(),
+                    },
+                );
+            }
+            Err(error) => toast(
+                &s,
+                &crate::i18n::tf("unsend_failed", &[("error", &error.to_string())]),
+            ),
+        }
+    });
+
+    // Capture secondary clicks before selectable labels open their copy menu.
+    let click = gtk::GestureClick::new();
+    click.set_button(3);
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak_menu = menu.downgrade();
+    click.connect_pressed(move |gesture, _, _, _| {
+        if let Some(menu) = weak_menu.upgrade() {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            menu.popup();
+        }
+    });
+    bubble.add_controller(click);
+}
+
+pub(super) fn apply_message_unsent(state: &AppState, chat_mid: &str, message_id: &str) {
+    state
+        .unsent_msg_ids
+        .borrow_mut()
+        .insert(message_id.to_string());
+    state.notif_pending.borrow_mut().remove(message_id);
+    state.media_ready_paths.borrow_mut().remove(message_id);
+    state
+        .app
+        .withdraw_notification(&format!("line-gtk-{message_id}"));
+    if state.current_chat.borrow().as_deref() != Some(chat_mid) {
+        return;
+    }
+    let playing = state
+        .voice_playback
+        .borrow()
+        .as_ref()
+        .is_some_and(|voice| voice.msg_id == message_id);
+    if playing {
+        stop_voice_playback(state);
+    }
+    if let Some(row) = state.message_rows.borrow_mut().remove(message_id) {
+        let label = gtk::Label::builder()
+            .label(crate::i18n::t("message_unsent"))
+            .css_classes(["dim-label"])
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        row.set_child(Some(&label));
+    }
+    state.media_slots.borrow_mut().remove(message_id);
+    state.media_msgs.borrow_mut().remove(message_id);
+    state.receipt_slots.borrow_mut().remove(message_id);
+    state.msg_created.borrow_mut().remove(message_id);
+    state
+        .media_queue
+        .borrow_mut()
+        .retain(|(id, _)| id != message_id);
+    *state.msg_list_fp.borrow_mut() = None;
 }
 
 pub(super) fn format_outgoing_status(read: bool, created_ms: i64) -> String {
@@ -1208,6 +1337,8 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 }
 
 pub(super) fn clear_messages(state: &AppState) {
+    *state.message_generation.borrow_mut() += 1;
+    state.message_rows.borrow_mut().clear();
     stop_voice_playback(state);
     state.message_list.clear();
     state.media_slots.borrow_mut().clear();

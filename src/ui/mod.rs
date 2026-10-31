@@ -156,6 +156,9 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         msg_created: Rc::new(RefCell::new(HashMap::new())),
         last_msg_day: Rc::new(RefCell::new(None)),
         seen_msg_ids: Rc::new(RefCell::new(HashSet::new())),
+        unsent_msg_ids: Rc::new(RefCell::new(HashSet::new())),
+        message_rows: Rc::new(RefCell::new(HashMap::new())),
+        message_generation: Rc::new(RefCell::new(0)),
         last_incoming_id: Rc::new(RefCell::new(None)),
         read_upto: Rc::new(RefCell::new(HashMap::new())),
         restored_last_chat: Rc::new(RefCell::new(false)),
@@ -974,6 +977,7 @@ fn now_ms() -> i64 {
 }
 
 fn remove_pending_placeholder(state: &AppState, placeholder_id: &str) {
+    state.message_rows.borrow_mut().remove(placeholder_id);
     if let Some(row) = state.pending_rows.borrow_mut().remove(placeholder_id) {
         state.message_list.remove(&row);
     }

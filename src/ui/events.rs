@@ -133,6 +133,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             handle_call_state(state, &peer, &call_state, error.as_deref());
         }
         ProtocolEvent::Message(msg) => {
+            if state.unsent_msg_ids.borrow().contains(&msg.id) {
+                return;
+            }
             let peer = if msg.mine {
                 msg.to.clone()
             } else {
@@ -286,6 +289,12 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 }
             }
         }
+        ProtocolEvent::MessageUnsent {
+            chat_mid,
+            message_id,
+        } => {
+            apply_message_unsent(state, &chat_mid, &message_id);
+        }
         ProtocolEvent::ChatMute { mid, muted } => {
             if let Some(chat) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == mid) {
                 chat.muted = muted;
@@ -310,6 +319,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             file_path,
         } => {
             // Always remember hydrated paths so list rebuilds / late bubbles can attach.
+            if state.unsent_msg_ids.borrow().contains(&message_id) {
+                return;
+            }
             if !image_path.is_empty() && std::path::Path::new(&image_path).exists() {
                 state
                     .media_ready_paths
@@ -521,7 +533,11 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     remove_pending_placeholder(state, placeholder_id);
                 }
                 let err = error.as_deref().unwrap_or("request failed");
-                if err.contains("sticker_not_owned") || err.contains("USER_NOT_STICKER_OWNER") {
+                if matches!(pending, Some(Pending::Unsend { .. })) {
+                    toast(state, &crate::i18n::tf("unsend_failed", &[("error", err)]));
+                } else if err.contains("sticker_not_owned")
+                    || err.contains("USER_NOT_STICKER_OWNER")
+                {
                     toast(state, &crate::i18n::t("sticker_not_owned"));
                 } else {
                     toast(state, err);
@@ -529,6 +545,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 return;
             }
             match pending {
+                Some(Pending::Unsend {
+                    chat_mid,
+                    message_id,
+                }) => {
+                    apply_message_unsent(state, &chat_mid, &message_id);
+                    toast(state, &crate::i18n::t("message_unsent"));
+                }
                 Some(Pending::Login) => on_logged_in(state, &result),
                 Some(Pending::ListChats) => {
                     let chats: Vec<ChatInfo> = result

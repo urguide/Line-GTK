@@ -129,6 +129,10 @@ pub enum ProtocolEvent {
     },
     Listening,
     Message(MessageInfo),
+    MessageUnsent {
+        chat_mid: String,
+        message_id: String,
+    },
     Chats {
         chats: Vec<ChatInfo>,
         cached: bool,

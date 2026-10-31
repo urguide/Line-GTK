@@ -1,5 +1,6 @@
 import type { Client, TalkMessage } from "@evex/linejs";
 import * as calls from "./calls.ts";
+import { unsendFromOperation } from "./unsend.ts";
 
 type Json = Record<string, unknown>;
 
@@ -8,6 +9,8 @@ export type ListenerRuntime = {
   isListening: () => boolean;
   setListening: (listening: boolean) => void;
   invalidateMessages: (chatMid: string) => void;
+  applyUnsent: (chatMid: string, messageId: string) => Promise<void>;
+  isUnsent: (messageId: unknown) => boolean;
   summarizeTalkMessage: (
     message: TalkMessage,
     opts?: { withMedia?: boolean },
@@ -46,6 +49,7 @@ export function createListener(runtime: ListenerRuntime) {
       try {
         const tm = msg as TalkMessage;
         const message = await summarizeTalkMessage(tm, { withMedia: false });
+        if (runtime.isUnsent(message.id)) return;
         const peer = message.mine ? String(message.to) : String(message.from);
         runtime.invalidateMessages(peer);
         // Advance box cursor so later refetch can see this message.
@@ -65,7 +69,7 @@ export function createListener(runtime: ListenerRuntime) {
       }
     });
 
-    client.on("event", (op: {
+    client.on("event", async (op: {
       type?: string | number;
       param1?: string;
       param2?: string;
@@ -73,7 +77,10 @@ export function createListener(runtime: ListenerRuntime) {
     }) => {
       try {
         const type = String(op?.type ?? "");
-        if (type === "NOTIFIED_READ_MESSAGE") {
+        const unsent = unsendFromOperation(op);
+        if (unsent) {
+          await runtime.applyUnsent(unsent.chatMid, unsent.messageId);
+        } else if (type === "NOTIFIED_READ_MESSAGE") {
           emitEvent("read_receipt", {
             chatMid: String(op.param1 ?? ""),
             userMid: String(op.param2 ?? ""),

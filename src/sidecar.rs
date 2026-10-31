@@ -330,6 +330,13 @@ impl Sidecar {
         )
     }
 
+    pub fn unsend_message(&self, chat_mid: &str, message_id: &str) -> Result<u64> {
+        self.request(
+            "unsend_message",
+            Some(json!({ "chatMid": chat_mid, "messageId": message_id })),
+        )
+    }
+
     pub fn mute_chat(&self, mid: &str, muted: bool) -> Result<u64> {
         self.request("mute_chat", Some(json!({ "mid": mid, "muted": muted })))
     }
@@ -542,6 +549,21 @@ fn read_loop<R: std::io::Read>(
                                 .to_string(),
                         },
                         "listening" => ProtocolEvent::Listening,
+                        "message_unsent" => {
+                            let chat_mid = resp.extra.get("chatMid").and_then(|v| v.as_str());
+                            let message_id = resp.extra.get("messageId").and_then(|v| v.as_str());
+                            match (chat_mid, message_id) {
+                                (Some(chat_mid), Some(message_id))
+                                    if !chat_mid.is_empty() && !message_id.is_empty() =>
+                                {
+                                    ProtocolEvent::MessageUnsent {
+                                        chat_mid: chat_mid.to_string(),
+                                        message_id: message_id.to_string(),
+                                    }
+                                }
+                                _ => ProtocolEvent::Error("invalid message_unsent event".into()),
+                            }
+                        }
                         "message" => {
                             if let Some(msg) = resp.extra.get("message") {
                                 match serde_json::from_value(msg.clone()) {
@@ -890,5 +912,26 @@ fn spawn_timeout_worker(
 impl Drop for Sidecar {
     fn drop(&mut self) {
         self.stop_process();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsend_event_preserves_identifiers_and_rejects_missing_fields() {
+        let input = concat!(
+            "{\"event\":\"message_unsent\",\"chatMid\":\"c-group\",\"messageId\":\"9007199254740993\"}\n",
+            "{\"event\":\"message_unsent\",\"chatMid\":\"c-group\"}\n",
+        );
+        let (tx, rx) = async_channel::unbounded();
+        read_loop(input.as_bytes(), tx, Arc::new(Mutex::new(HashSet::new())));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ProtocolEvent::MessageUnsent { chat_mid, message_id }
+                if chat_mid == "c-group" && message_id == "9007199254740993"
+        ));
+        assert!(matches!(rx.try_recv().unwrap(), ProtocolEvent::Error(_)));
     }
 }
