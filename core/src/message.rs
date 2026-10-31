@@ -1,6 +1,36 @@
 //! Presentation and metadata interpretation belong to the application, not linejs.
 use serde_json::{Value, json};
 
+/// A failed message remains a row in the page, without displaying ciphertext
+/// or executing embedded Flex actions. Original metadata is retained for retry.
+pub fn from_envelope(envelope: &Value, account: &str) -> Value {
+    let decoded = envelope.get("decodedMessage").filter(|v| v.is_object());
+    let raw = envelope.get("rawMessage").filter(|v| v.is_object());
+    if envelope.get("decodedMessage").is_none() && envelope.get("decodeError").is_none() {
+        return envelope.clone(); // legacy normalized cache/event
+    }
+    let mut message = normalize(decoded.or(raw).unwrap_or(&Value::Null), account);
+    let failed = decoded.is_none() || envelope["decodeError"].is_string();
+    message["decodeError"] = if failed {
+        json!("message_decode_failed")
+    } else {
+        Value::Null
+    };
+    message["rawMessage"] = envelope["rawMessage"].clone();
+    if failed {
+        let encrypted = raw.is_some_and(|r| {
+            r["chunks"].as_array().is_some_and(|v| !v.is_empty())
+                || !r["contentMetadata"]["e2eeVersion"].is_null()
+        });
+        if encrypted || message["text"].as_str().is_none_or(|s| s.is_empty()) {
+            message["text"] = json!("[Unable to decrypt message]");
+        }
+        message["flex"] = Value::Null;
+        message["needsMedia"] = json!(false);
+    }
+    message
+}
+
 pub fn normalize(raw: &Value, account: &str) -> Value {
     let meta = &raw["contentMetadata"];
     let content_type = match raw["contentType"].as_u64() {

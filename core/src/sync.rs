@@ -167,11 +167,7 @@ impl<T: Transport> Engine<T> {
         self.valid(generation)?;
         let mut page: Page = serde_json::from_value(result?)?;
         for row in &mut page.messages {
-            if let Some(raw) = row.get("decodedMessage") {
-                let mut normalized = crate::message::normalize(raw, &self.account);
-                normalized["rawMessage"] = row["rawMessage"].clone();
-                *row = normalized;
-            }
+            *row = crate::message::from_envelope(row, &self.account);
         }
         if page.messages.len() > 20 {
             bail!("protocol returned oversized history page");
@@ -184,12 +180,14 @@ impl<T: Transport> Engine<T> {
 
     fn queue_media(&mut self, chat: &str, rows: &[Value], generation: u64) {
         for row in rows.iter().rev() {
-            if matches!(
-                row["contentType"].as_str(),
-                Some("IMAGE" | "VIDEO" | "AUDIO" | "STICKER")
-            ) && self
-                .queued_media
-                .insert((chat.to_owned(), id(row).to_owned()))
+            if row["decodeError"].is_null()
+                && matches!(
+                    row["contentType"].as_str(),
+                    Some("IMAGE" | "VIDEO" | "AUDIO" | "STICKER")
+                )
+                && self
+                    .queued_media
+                    .insert((chat.to_owned(), id(row).to_owned()))
             {
                 self.background.push_back(Work::Media {
                     chat: chat.to_owned(),

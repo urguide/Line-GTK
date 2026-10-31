@@ -123,6 +123,11 @@ Downloaded image/video originals remain available even if thumbnail generation
 fails: incomplete previews are removed, images can display the original, and
 videos retain a playable file path. Opening them again uses the local original
 instead of downloading again solely because a thumbnail is unavailable.
+History decoding is isolated per message: the protocol returns either decoded
+data or a fixed error code plus the original wire metadata. Rust preserves a
+safe fallback row in SQLite, shows an unavailable-message label for encrypted
+content, and keeps the page cursor advancing. Failed encrypted media is not
+automatically downloaded; a later successful decode can replace the fallback.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

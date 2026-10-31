@@ -1,9 +1,96 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import type { Client } from "@evex/linejs";
+import type { Client, TalkMessage } from "@evex/linejs";
 import { createApi } from "../src/api.ts";
 import { packRaw, unpackRaw } from "../src/raw_codec.ts";
 import { coerceI64 } from "../src/messages.ts";
 import { unsendFromOperation } from "../src/events.ts";
+
+Deno.test("one decode failure preserves the page, original metadata and next cursor", async () => {
+  const base = 9007199254740993n;
+  const seen: string[] = [];
+  let page = 0;
+  const client = {
+    base: {
+      talk: {
+        getPreviousMessagesV2WithRequest: (
+          { request }: {
+            request: {
+              endMessageId: { messageId: bigint | number };
+              messagesCount: number;
+            };
+          },
+        ) => {
+          assertEquals(request.messagesCount, 20);
+          assertEquals(
+            request.endMessageId.messageId,
+            page === 0 ? base + 20n : base,
+          );
+          const raw = page++ === 0
+            ? Array.from(
+              { length: 20 },
+              (_, i) => ({
+                id: String(base + 19n - BigInt(i)),
+                createdTime: 20 - i,
+                deliveredTime: 20 - i,
+                contentType: "NONE",
+                contentMetadata: { e2eeVersion: "2" },
+                chunks: [new Uint8Array([i])],
+              }),
+            )
+            : [{
+              id: String(base - 1n),
+              createdTime: 0,
+              deliveredTime: 0,
+              contentType: "NONE",
+              contentMetadata: {},
+              chunks: [],
+            }];
+          return Promise.resolve(raw);
+        },
+      },
+    },
+  } as unknown as Client;
+  const api = createApi(() => client, "/unused", (raw) => {
+    seen.push(String(raw.id));
+    if (String(raw.id) === String(base)) {
+      raw.contentMetadata = { mutated: "yes" };
+      throw new Error("sensitive decoder details must not leak");
+    }
+    return Promise.resolve(
+      { raw: { ...raw, text: "decoded" } } as unknown as TalkMessage,
+    );
+  });
+  const first = await api("bridge_fetch_page", {
+    chatMid: "u1",
+    before: { messageId: String(base + 20n), deliveredTime: "21" },
+  }) as {
+    messages: Record<string, unknown>[];
+    nextCursor: { messageId: string; deliveredTime: string };
+    hasMore: boolean;
+  };
+  assertEquals(first.messages.length, 20);
+  assertEquals(seen.length, 20);
+  assertEquals(first.hasMore, true);
+  assertEquals(first.nextCursor, {
+    messageId: String(base),
+    deliveredTime: "1",
+  });
+  assertEquals(first.messages[19].decodeError, "message_decode_failed");
+  assertEquals(first.messages[19].decodedMessage, null);
+  const saved = first.messages[19].rawMessage as Record<string, unknown>;
+  assertEquals(saved.contentMetadata, { e2eeVersion: "2" });
+  assertEquals(JSON.stringify(first).includes("sensitive"), false);
+  assertEquals(
+    (first.messages[0].decodedMessage as Record<string, unknown>).text,
+    "decoded",
+  );
+  const next = await api("bridge_fetch_page", {
+    chatMid: "u1",
+    before: first.nextCursor,
+  }) as { messages: unknown[]; hasMore: boolean };
+  assertEquals(next.messages.length, 1);
+  assertEquals(next.hasMore, false);
+});
 
 Deno.test("sticker RPC requires Rust-selected version and propagates ownership errors", async () => {
   let count = 0;

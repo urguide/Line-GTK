@@ -5,7 +5,12 @@ import { packRaw, unpackRaw } from "./raw_codec.ts";
 import { Buffer } from "node:buffer";
 
 type Json = Record<string, unknown>;
-export function createApi(getClient: () => Client | null, transfer: string) {
+export function createApi(
+  getClient: () => Client | null,
+  transfer: string,
+  decode: typeof TalkMessage.fromRawTalk = (raw, client) =>
+    TalkMessage.fromRawTalk(raw, client),
+) {
   let busy = false;
   function client(): Client {
     const value = getClient();
@@ -52,12 +57,26 @@ export function createApi(getClient: () => Client | null, transfer: string) {
         });
         const messages = [];
         for (const message of raw) {
-          if (p.before && message.id === end.messageId) continue;
-          const tm = await TalkMessage.fromRawTalk(message, c);
-          messages.push({
-            decodedMessage: packRaw(tm.raw),
-            rawMessage: packRaw(message),
-          });
+          if (p.before && String(message.id) === end.messageId) continue;
+          // Snapshot before decoding: linejs may mutate metadata/chunks before
+          // throwing. Keep the original available for later key recovery.
+          const rawMessage = packRaw(message);
+          try {
+            const tm = await decode(message, c);
+            messages.push({
+              decodedMessage: packRaw(tm.raw),
+              rawMessage,
+              decodeError: null,
+            });
+          } catch {
+            // Do not expose decoder exception text (it may contain key material).
+            // Rust owns fallback text, presentation and persistence decisions.
+            messages.push({
+              decodedMessage: null,
+              rawMessage,
+              decodeError: "message_decode_failed",
+            });
+          }
         }
         const oldest = raw.at(-1);
         const nextCursor = oldest
