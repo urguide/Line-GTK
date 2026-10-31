@@ -24,6 +24,51 @@ pub enum Fetch {
     Missing,
 }
 
+/// Preserve the original CDN order and filenames, including iPhone @2x assets.
+pub fn candidate_urls(id: &str, animated: bool) -> Result<Vec<String>> {
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        bail!("invalid sticker ID");
+    }
+    let paths = if animated {
+        [
+            "android/sticker_animation.png",
+            "ANDROID/sticker_animation.png",
+            "iPhone/sticker_animation@2x.png",
+        ]
+    } else {
+        [
+            "android/sticker.png",
+            "iPhone/sticker@2x.png",
+            "ANDROID/sticker.png",
+        ]
+    };
+    Ok(paths
+        .iter()
+        .map(|path| format!("https://stickershop.line-scdn.net/stickershop/v1/sticker/{id}/{path}"))
+        .collect())
+}
+
+/// Only aggregate Missing when every URL confirmed absence. Retain an error
+/// even if later paths return 404, and stop immediately when a path succeeds.
+pub fn fetch_candidates(
+    id: &str,
+    animated: bool,
+    mut fetch: impl FnMut(&str) -> Result<Fetch>,
+) -> Result<Fetch> {
+    let mut transient = None;
+    for url in candidate_urls(id, animated)? {
+        match fetch(&url) {
+            Ok(Fetch::Saved) => return Ok(Fetch::Saved),
+            Ok(Fetch::Missing) => {}
+            Err(error) => transient = Some(error),
+        }
+    }
+    if let Some(error) = transient {
+        return Err(error);
+    }
+    Ok(Fetch::Missing)
+}
+
 #[derive(Serialize, Deserialize)]
 struct Miss {
     version: u8,
@@ -59,13 +104,13 @@ pub fn load(
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Miss>(&bytes).ok())
             .is_some_and(|miss| {
-                miss.version == 1
+                miss.version == 2
                     && now_ms >= miss.confirmed_missing_at
                     && ttl.is_none_or(|ttl| now_ms - miss.confirmed_missing_at < ttl)
             });
         if !fresh {
-            // Legacy markers did not distinguish HTTP absence from network
-            // failure. Revalidate them rather than perpetuate a false miss.
+            // Untyped markers mixed network failures with absence; version 1
+            // checked Android only. Both need revalidation across all paths.
             let _ = std::fs::remove_file(&marker);
             match fetch(true, &animation) {
                 Ok(Fetch::Saved) if present(&animation) => return Ok(animation),
@@ -76,7 +121,7 @@ pub fn load(
                         std::fs::write(
                             &temporary,
                             serde_json::to_vec(&Miss {
-                                version: 1,
+                                version: 2,
                                 confirmed_missing_at: now_ms,
                             })?,
                         )?;

@@ -43,6 +43,10 @@ the static image without another animation request, including after restart.
 The retry period follows the existing setting: Day 1 day, Week/Smart 7 days,
 Month 30 days, Forever until cache clearing. Network errors and 403/429/5xx are
 not recorded as missing. Old untyped `.anim.miss` files are revalidated once.
+Animation and static CDN paths are tried sequentially using the legacy Android,
+uppercase ANDROID and iPhone variants (including `@2x` names). An animation miss
+is persisted only when every candidate reports 404/410; mixed transient failures
+remain retryable. Older Android-only miss markers are revalidated across all paths.
 Attachment progress is emitted by Rust at preparation, upload and local-save
 stages. Every upload operation emits one terminal success/failure event before
 its response, including early validation failures, so the UI can close progress.

@@ -134,6 +134,7 @@ fn invalid_legacy_markers_revalidate_and_static_requests_never_probe_animation()
     for bytes in [
         b"".as_slice(),
         b"not-json",
+        br#"{"version":1,"confirmed_missing_at":1000}"#,
         br#"{"version":1,"confirmed_missing_at":9999}"#,
     ] {
         std::fs::write(root.0.join("1.anim.miss"), bytes).unwrap();
@@ -174,6 +175,124 @@ fn invalid_legacy_markers_revalidate_and_static_requests_never_probe_animation()
         Some(30 * 86_400_000)
     );
     assert_eq!(sticker_cache::animation_miss_ttl("forever"), None);
+}
+
+#[test]
+fn alternate_static_and_animated_paths_succeed_after_preferred_path_is_missing() {
+    for animated in [true, false] {
+        for success_at in [1, 2] {
+            let root = Temp::new();
+            let mut requested = Vec::new();
+            let candidates = sticker_cache::candidate_urls("123", animated).unwrap();
+            let image = sticker_cache::load(
+                &root.0,
+                "123",
+                animated,
+                Some(100),
+                1000,
+                |animation, path| {
+                    assert_eq!(animation, animated);
+                    sticker_cache::fetch_candidates("123", animation, |url| {
+                        let index = requested.len();
+                        requested.push(url.to_owned());
+                        if index == success_at {
+                            std::fs::write(path, b"fallback image")?;
+                            Ok(Fetch::Saved)
+                        } else {
+                            Ok(Fetch::Missing)
+                        }
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(requested, candidates[..=success_at]);
+            assert_eq!(std::fs::read(&image).unwrap(), b"fallback image");
+            assert!(!root.0.join("123.anim.miss").exists());
+            sticker_cache::load(&root.0, "123", animated, Some(100), 1001, |_, _| {
+                panic!("cached success must not refetch")
+            })
+            .unwrap();
+        }
+    }
+    let static_urls = sticker_cache::candidate_urls("123", false).unwrap();
+    assert!(static_urls[0].ends_with("/android/sticker.png"));
+    assert!(static_urls[1].ends_with("/iPhone/sticker@2x.png"));
+    assert!(static_urls[2].ends_with("/ANDROID/sticker.png"));
+    let animated_urls = sticker_cache::candidate_urls("123", true).unwrap();
+    assert!(animated_urls[0].ends_with("/android/sticker_animation.png"));
+    assert!(animated_urls[1].ends_with("/ANDROID/sticker_animation.png"));
+    assert!(animated_urls[2].ends_with("/iPhone/sticker_animation@2x.png"));
+}
+
+#[test]
+fn only_all_missing_candidates_create_negative_cache() {
+    for transient_at in [None, Some(0), Some(1), Some(2)] {
+        let root = Temp::new();
+        std::fs::write(root.0.join("123.png"), b"static").unwrap();
+        let mut requests = 0;
+        let image = sticker_cache::load(&root.0, "123", true, Some(100), 1000, |animated, _| {
+            assert!(animated);
+            sticker_cache::fetch_candidates("123", animated, |_| {
+                let index = requests;
+                requests += 1;
+                if Some(index) == transient_at {
+                    bail!("HTTP 503");
+                }
+                Ok(Fetch::Missing)
+            })
+        })
+        .unwrap();
+        assert_eq!(requests, 3);
+        assert!(image.ends_with("123.png"));
+        assert_eq!(
+            root.0.join("123.anim.miss").exists(),
+            transient_at.is_none()
+        );
+        if transient_at.is_none() {
+            sticker_cache::load(&root.0, "123", true, Some(100), 1050, |_, _| {
+                panic!("all paths already confirmed missing")
+            })
+            .unwrap();
+        } else {
+            let mut retried = 0;
+            sticker_cache::load(&root.0, "123", true, Some(100), 1050, |animated, path| {
+                sticker_cache::fetch_candidates("123", animated, |_| {
+                    retried += 1;
+                    std::fs::write(path, b"animation recovered")?;
+                    Ok(Fetch::Saved)
+                })
+            })
+            .unwrap();
+            assert_eq!(retried, 1);
+            assert!(!root.0.join("123.anim.miss").exists());
+        }
+    }
+}
+
+#[test]
+fn transient_preferred_path_can_still_use_later_success_and_legacy_android_miss_is_rechecked() {
+    let root = Temp::new();
+    std::fs::write(
+        root.0.join("123.anim.miss"),
+        br#"{"version":1,"confirmed_missing_at":1000}"#,
+    )
+    .unwrap();
+    let mut requests = 0;
+    let result = sticker_cache::load(&root.0, "123", true, None, 1001, |animation, path| {
+        sticker_cache::fetch_candidates("123", animation, |_| {
+            requests += 1;
+            if requests == 1 {
+                bail!("timeout");
+            }
+            std::fs::write(path, b"animation")?;
+            Ok(Fetch::Saved)
+        })
+    })
+    .unwrap();
+    assert_eq!(requests, 2);
+    assert!(result.ends_with("123.anim.png"));
+    assert!(!root.0.join("123.anim.miss").exists());
+    assert!(sticker_cache::fetch_candidates("../123", true, |_| panic!("invalid ID")).is_err());
 }
 
 #[test]

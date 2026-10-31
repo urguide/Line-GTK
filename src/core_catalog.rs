@@ -96,17 +96,22 @@ impl Ipc {
             sticker_cache::animation_miss_ttl(&cfg.cache_retention),
             now,
             |animation, dest| {
-                let file = if animation {
-                    "sticker_animation.png"
-                } else {
-                    "sticker.png"
-                };
-                match self.asset(&format!("https://stickershop.line-scdn.net/stickershop/v1/sticker/{id}/android/{file}"),dest,generation) {
-                    Ok(_)=>Ok(Fetch::Saved),
-                    Err(error) if error.downcast_ref::<reqwest::Error>().and_then(reqwest::Error::status)
-                        .is_some_and(|status|sticker_cache::confirms_absence(status.as_u16()))=>Ok(Fetch::Missing),
-                    Err(error)=>Err(error),
-                }
+                sticker_cache::fetch_candidates(id, animation, |url| {
+                    match self.asset(url, dest, generation) {
+                        Ok(_) => Ok(Fetch::Saved),
+                        Err(error)
+                            if error
+                                .downcast_ref::<reqwest::Error>()
+                                .and_then(reqwest::Error::status)
+                                .is_some_and(|status| {
+                                    sticker_cache::confirms_absence(status.as_u16())
+                                }) =>
+                        {
+                            Ok(Fetch::Missing)
+                        }
+                        Err(error) => Err(error),
+                    }
+                })
             },
         );
         self.active(generation)?;
