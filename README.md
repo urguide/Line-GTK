@@ -67,6 +67,10 @@ sent immediately to the Rust worker and rechecked on subsequent requests.
 Freshness expiry triggers a refresh; disk retention controls how long saved
 history and stale list fallbacks remain usable. Invalidating freshness does not
 reset a catalog's disk age. SQLite upgrades preserve existing catalog rows.
+Read receipts are best-effort Rust operations: missing IDs, no linked session,
+or a rejected API call return `marked: false` inside a successful response
+envelope, without a UI error toast. Only an acknowledged receipt clears that
+chat's SQLite unread count, preserving other chats, accounts and cache expiry.
 Attachment progress is emitted by Rust at preparation, upload and local-save
 stages. Every upload operation emits one terminal success/failure event before
 its response, including early validation failures, so the UI can close progress.

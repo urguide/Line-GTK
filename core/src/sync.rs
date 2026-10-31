@@ -241,6 +241,50 @@ impl<T: Transport> Engine<T> {
         Ok(updated)
     }
 
+    fn mark_read(&mut self, params: &Value, generation: u64) -> Value {
+        if self.valid(generation).is_err() {
+            return json!({"marked":false,"skipped":"not_logged_in"});
+        }
+        let chat = params["chatMid"].as_str().unwrap_or_default();
+        let message = params["lastMessageId"].as_str().unwrap_or_default();
+        if chat.trim().is_empty() || message.trim().is_empty() {
+            return json!({"marked":false,"skipped":"missing_ids"});
+        }
+        if !message.bytes().all(|b| b.is_ascii_digit()) || message.parse::<u64>().is_err() {
+            return json!({"marked":false,"skipped":"invalid_message_id"});
+        }
+        let result: Result<Value> = (|| {
+            self.pace(self.last_request, self.page_pause, generation)?;
+            let response = self.transport.call(
+                "bridge_mark_read",
+                json!({"chatMid":chat,"lastMessageId":message}),
+                generation,
+            );
+            self.last_request = Some(Instant::now());
+            self.valid(generation)?;
+            let response = response?;
+            if response["marked"] != true {
+                return Ok(
+                    json!({"marked":false,"error":response["error"].as_str().unwrap_or("read receipt not acknowledged")}),
+                );
+            }
+            // The server already accepted the receipt. Do not misreport a local
+            // cache failure as a rejected receipt, and never turn it into a toast.
+            let cache_error = self
+                .store
+                .mark_chat_read(chat)
+                .err()
+                .map(|error| error.to_string());
+            Ok(
+                json!({"marked":true,"chatMid":chat,"lastMessageId":message,"cacheUpdated":cache_error.is_none(),"cacheError":cache_error}),
+            )
+        })();
+        match result {
+            Ok(value) => value,
+            Err(error) => json!({"marked":false,"error":format!("{error}")}),
+        }
+    }
+
     fn command(&mut self, command: Command) -> Result<bool> {
         match command {
             Command::Operation {
@@ -249,6 +293,11 @@ impl<T: Transport> Engine<T> {
                 mut params,
                 generation,
             } => {
+                if method == "mark_read" {
+                    let result = self.mark_read(&params, generation);
+                    self.response(id, Ok(result), generation);
+                    return Ok(true);
+                }
                 let upload = matches!(method.as_str(), "send_media" | "send_audio");
                 let upload_chat = params["chatMid"].as_str().unwrap_or_default().to_owned();
                 if upload && self.generation.load(Ordering::SeqCst) == generation {

@@ -399,7 +399,6 @@ impl Ipc {
                 Ok(result)
             }
             "send_sticker" => self.call("bridge_send_sticker", p, generation),
-            "mark_read" => self.call("bridge_mark_read", p, generation),
             "unsend_message" => {
                 let result = self.call("bridge_unsend", p, generation)?;
                 self.emit(json!({"event":"message_unsent","chatMid":result["chatMid"],"messageId":result["messageId"]}));

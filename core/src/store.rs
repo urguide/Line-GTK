@@ -172,6 +172,37 @@ impl Store {
         Ok(())
     }
 
+    /// Only amend unread state after server acknowledgement. Preserve freshness,
+    /// invalidation and unrelated chats; reading a chat is not a catalog refresh.
+    pub fn mark_chat_read(&self, chat: &str) -> Result<()> {
+        let body: Option<String> = self
+            .db
+            .query_row(
+                "SELECT body FROM catalogs WHERE account=?1 AND kind='list_chats'",
+                params![self.account],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(body) = body else {
+            return Ok(());
+        };
+        let mut catalog: Value = serde_json::from_str(&body)?;
+        let mut changed = false;
+        for row in catalog["chats"].as_array_mut().into_iter().flatten() {
+            if row["mid"].as_str() == Some(chat) {
+                row["unread"] = json!(0);
+                changed = true;
+            }
+        }
+        if changed {
+            self.db.execute(
+                "UPDATE catalogs SET body=?1 WHERE account=?2 AND kind='list_chats'",
+                params![catalog.to_string(), self.account],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Remove the rejected recent and all ownership snapshots atomically. Delete
     /// instead of merely expiring: stale catalog fallback must not restore it.
     pub fn reject_sticker(&mut self, sticker: &str, package: &str) -> Result<()> {
