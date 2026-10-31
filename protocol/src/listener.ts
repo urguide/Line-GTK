@@ -1,7 +1,7 @@
 import type { Client, TalkMessage } from "@evex/linejs";
 import * as calls from "./calls.ts";
 import { unsendFromOperation } from "./unsend.ts";
-import { packRaw } from "./history.ts";
+import { packRaw } from "./raw_codec.ts";
 
 type Json = Record<string, unknown>;
 
@@ -52,14 +52,22 @@ export function createListener(runtime: ListenerRuntime) {
         const tm = msg as TalkMessage;
         const message = await summarizeTalkMessage(tm, { withMedia: false });
         if (runtime.isUnsent(message.id)) return;
-        const peer = message.mine ? String(message.to) : String(message.from);
+        const peer = String(message.to).startsWith("c") ||
+            String(message.to).startsWith("r")
+          ? String(message.to)
+          : message.mine
+          ? String(message.to)
+          : String(message.from);
         runtime.invalidateMessages(peer);
         // Advance box cursor so later refetch can see this message.
         storeBoxCursor(peer, {
           messageId: message.id,
           deliveredTime: message.createdTime,
         });
-        emitEvent("message", { message: { ...message, imagePath: null } });
+        emitEvent("message", {
+          chatMid: peer,
+          message: { ...message, rawMessage: packRaw(tm.raw), imagePath: null },
+        });
         await runtime.saveMessages(peer, [{
           ...message,
           rawMessage: packRaw(tm.raw),

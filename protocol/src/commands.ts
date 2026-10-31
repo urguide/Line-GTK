@@ -196,6 +196,7 @@ export function createCommandService(runtime: CommandRuntime) {
     runtime.setClient(client);
     await saveAuth(client.authToken, device);
     const profile = await client.getMyProfile();
+    emitEvent("core_session", await myProfilePayload(profile));
     patchE2eeGuards();
     await startListen();
     ok(id, { ...(await myProfilePayload(profile)), device });
@@ -242,6 +243,7 @@ export function createCommandService(runtime: CommandRuntime) {
     await saveAuth(client.authToken, device);
     const profile = await client.getMyProfile();
     patchE2eeGuards();
+    emitEvent("core_session", await myProfilePayload(profile));
     await startListen();
     ok(id, {
       ...(await myProfilePayload(profile)),

@@ -8,7 +8,13 @@ repository = "https://github.com/MidnightTale/line-gtk"
 homepage = "https://github.com/MidnightTale/line-gtk"
 description = "Unofficial native LINE client for Linux (GTK4 / Libadwaita)"
 
+[workspace]
+members = ["core"]
+default-members = [".", "core"]
+resolver = "3"
+
 [dependencies]
+line-gtk-core = { path = "core" }
 anyhow = "1.0.104"
 async-channel = "2.5.0"
 chrono = { version = "0.4.45", features = ["serde"] }

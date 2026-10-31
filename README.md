@@ -7,6 +7,15 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 
 ## Implementation
 
+Message persistence, deduplication, 20-message pagination, gap repair and media
+download scheduling are owned by the Rust `line-gtk-core` crate. Messages and
+checkpoints use SQLite transactions; legacy JSON histories are imported once
+after login and retained as backups. The TypeScript bridge performs LINE API
+requests and E2EE decoding; decoded attachments cross IPC as temporary file paths,
+not JSON/base64 payloads. Rust validates those paths, stores media and generates
+thumbnails with ffmpeg. Login, contacts, stickers, sending and experimental calls
+continue to use linejs.
+
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends
 - [x] 20-message history pages on upward scroll, merged disk cache (360 days in Smart mode)

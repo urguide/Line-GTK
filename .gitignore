@@ -1,5 +1,6 @@
 # Generated
 /target
+/core/target
 **/*.rs.bk
 
 # Local session / secrets

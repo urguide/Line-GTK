@@ -16,7 +16,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct Sidecar {
     child: Arc<Mutex<Option<Child>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
-    next_id: AtomicU64,
+    next_id: Arc<AtomicU64>,
+    core: crate::core_bridge::CoreBridge,
     generation: Arc<AtomicU64>,
     pending_ids: Arc<Mutex<HashSet<u64>>>,
     timeout_tx: std::sync::mpsc::Sender<(u64, Instant)>,
@@ -40,11 +41,22 @@ impl Sidecar {
         let pending_ids = Arc::new(Mutex::new(HashSet::new()));
         let (timeout_tx, timeout_rx) = std::sync::mpsc::channel();
         spawn_timeout_worker(timeout_rx, pending_ids.clone(), tx.clone());
+        let stdin = Arc::new(Mutex::new(None));
+        let next_id = Arc::new(AtomicU64::new(1));
+        let generation = Arc::new(AtomicU64::new(0));
+        let core = crate::core_bridge::CoreBridge::start(
+            data_dir,
+            stdin.clone(),
+            next_id.clone(),
+            generation.clone(),
+            tx.clone(),
+        )?;
         let sidecar = Self {
             child: Arc::new(Mutex::new(None)),
-            stdin: Arc::new(Mutex::new(None)),
-            next_id: AtomicU64::new(1),
-            generation: Arc::new(AtomicU64::new(0)),
+            stdin,
+            next_id,
+            generation,
+            core,
             pending_ids,
             timeout_tx,
             event_tx: tx,
@@ -128,11 +140,12 @@ impl Sidecar {
         let tx = self.event_tx.clone();
         let pending_ids = self.pending_ids.clone();
         let current_generation = self.generation.clone();
+        let core = self.core.clone();
 
         thread::Builder::new()
             .name("line-sidecar-stdout".into())
             .spawn(move || {
-                read_loop(stdout, tx.clone(), pending_ids);
+                read_loop_inner(stdout, tx.clone(), pending_ids, Some((core, generation)));
                 if current_generation.load(Ordering::SeqCst) == generation {
                     let _ = tx.send_blocking(ProtocolEvent::Exited(-1));
                 }
@@ -213,6 +226,54 @@ impl Sidecar {
 
     pub fn request(&self, method: &str, params: Option<Value>) -> Result<u64> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let generation = self.generation.load(Ordering::SeqCst);
+        let body = params.as_ref().cloned().unwrap_or_else(|| json!({}));
+        let chat = body["chatMid"].as_str().unwrap_or_default().to_owned();
+        use line_gtk_core::sync::Command as CoreCommand;
+        if matches!(method, "fetch_messages" | "download_media") {
+            let cfg = crate::config::AppConfig::load(&self.data_dir);
+            self.core
+                .commands
+                .send(CoreCommand::Retention(cfg.cache_retention))?;
+            let command = if method == "fetch_messages" {
+                CoreCommand::Fetch {
+                    id,
+                    chat,
+                    before: body
+                        .get("before")
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .transpose()?,
+                    generation,
+                }
+            } else {
+                CoreCommand::Download {
+                    id,
+                    chat,
+                    message: body["messageId"].as_str().unwrap_or_default().into(),
+                    generation,
+                }
+            };
+            self.core.commands.send(command)?;
+            return Ok(id);
+        }
+        if method == "clear_cache" && matches!(body["kind"].as_str(), Some("all" | "messages")) {
+            self.core.commands.send(CoreCommand::Clear {
+                id: if body["kind"] == "all" { 0 } else { id },
+                generation,
+            })?;
+            if body["kind"] == "messages" {
+                return Ok(id);
+            }
+        }
+        if matches!(
+            method,
+            "send_message" | "send_audio" | "send_media" | "send_sticker" | "send_postback"
+        ) {
+            self.core
+                .commands
+                .send(CoreCommand::Invalidate { chat, generation })?;
+        }
         let req = Request {
             id,
             method: method.to_string(),
@@ -474,10 +535,20 @@ fn which(bin: &str) -> Option<PathBuf> {
     })
 }
 
+#[cfg(test)]
 fn read_loop<R: std::io::Read>(
     stdout: R,
     tx: Sender<ProtocolEvent>,
     pending_ids: Arc<Mutex<HashSet<u64>>>,
+) {
+    read_loop_inner(stdout, tx, pending_ids, None);
+}
+
+fn read_loop_inner<R: std::io::Read>(
+    stdout: R,
+    tx: Sender<ProtocolEvent>,
+    pending_ids: Arc<Mutex<HashSet<u64>>>,
+    core: Option<(crate::core_bridge::CoreBridge, u64)>,
 ) {
     let reader = BufReader::new(stdout);
     for line in reader.lines() {
@@ -493,6 +564,11 @@ fn read_loop<R: std::io::Read>(
         }
         match serde_json::from_str::<Response>(line) {
             Ok(resp) => {
+                if let Some((bridge, generation)) = &core
+                    && bridge.route(&resp, *generation)
+                {
+                    continue;
+                }
                 if let Some(event) = resp.event.as_deref() {
                     let ev = match event {
                         "ready" => ProtocolEvent::Ready {
@@ -925,6 +1001,7 @@ fn spawn_timeout_worker(
 impl Drop for Sidecar {
     fn drop(&mut self) {
         self.stop_process();
+        let _ = self.core.commands.send(line_gtk_core::sync::Command::Stop);
     }
 }
 

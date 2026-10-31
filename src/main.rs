@@ -1,4 +1,5 @@
 mod config;
+mod core_bridge;
 mod desktop_notify;
 mod discord_rpc;
 mod i18n;

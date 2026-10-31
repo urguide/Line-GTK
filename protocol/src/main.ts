@@ -19,8 +19,8 @@ import { createCommandService } from "./commands.ts";
 import { createListener } from "./listener.ts";
 import { createMessageView } from "./message_view.ts";
 import { createUnsendService, UnsentMessages } from "./unsend.ts";
-import { MessageHistory, packRaw, unpackRaw } from "./history.ts";
-import { createHistoryService } from "./history_service.ts";
+import { unpackRaw } from "./raw_codec.ts";
+import { createBridge } from "./bridge.ts";
 import { SerialQueue } from "./download_queue.ts";
 
 type Json = Record<string, unknown>;
@@ -283,23 +283,13 @@ const outgoingMedia = createOutgoingMedia({
 let chatCache: { at: number; chats: ChatRow[] } | null = null;
 const msgCache = new Map<string, { at: number; messages: Json[] }>();
 const downloads = new SerialQueue(500);
-const history = new MessageHistory(
-  msgDiskDir,
-  () => cachePolicy().diskMsg,
-  (rows) => unsentMessages.filter(rows),
-);
-const historyService = createHistoryService({
-  getClient: () => client,
-  history,
-  memoryTtl: () => cachePolicy().memMsg,
+const bridge = createBridge({
+  client: () => client,
+  transferDir: join(cacheDir, "transfer"),
   summarize: (raw) =>
     summarizeRawMessage(raw as Parameters<typeof summarizeRawMessage>[0], {
       withMedia: false,
     }),
-  forUi: forUiMessages,
-  hydrate: (rows, chat) => hydrateMedia(rows, chat, { isolated: true }),
-  remember: (chat, rows) =>
-    msgCache.set(chat, { at: Date.now(), messages: rows }),
 });
 const inFlight = new Map<string, Promise<unknown>>();
 const contactIndex = new Map<
@@ -323,14 +313,13 @@ const listener = createListener({
   invalidateMessages: (chatMid) => msgCache.delete(chatMid),
   applyUnsent,
   saveMessages: async (chatMid, rows) => {
-    historyService.invalidate(chatMid);
     await saveDiskMessages(chatMid, rows);
   },
   isUnsent: (id) => unsentMessages.has(id),
   summarizeTalkMessage,
   storeBoxCursor,
   upsertChatFromMessage,
-  hydrateLiveMedia,
+  hydrateLiveMedia: async () => {},
   upsertChatFromContact,
   emitEvent,
 });
@@ -341,7 +330,6 @@ const unsendMessage = createUnsendService({
 });
 
 async function applyUnsent(chatMid: string, messageId: string): Promise<void> {
-  historyService.invalidate(chatMid);
   // Mark synchronously before notifying GTK or awaiting any disk I/O.
   const persisted = unsentMessages.mark(messageId).catch((error) => {
     console.error("[unsent-cache]", error);
@@ -454,7 +442,6 @@ function bumpMediaEpoch(chatMid: string): number {
 let workGen = 0;
 function cancelBackgroundWork() {
   workGen++;
-  historyService.clear();
   for (const mid of [...mediaEpoch.keys()]) {
     bumpMediaEpoch(mid);
   }
@@ -530,7 +517,7 @@ async function refetchMessageData(
   opts: { allowNonImage?: boolean } = {},
 ): Promise<{ buf: Uint8Array; mime: string } | null> {
   if (!client) return null;
-  const stored = (await history.load(chatMid)).find((row) =>
+  const stored = (msgCache.get(chatMid)?.messages ?? []).find((row) =>
     String(row.id) === messageId
   );
   if (stored?.rawMessage) {
@@ -708,18 +695,17 @@ async function saveDiskContacts() {
   }
 }
 
-async function loadDiskMessages(chatMid: string): Promise<Json[] | null> {
-  await refreshCachePolicy();
-  return await history.load(chatMid);
+function loadDiskMessages(chatMid: string): Promise<Json[] | null> {
+  return Promise.resolve(msgCache.get(chatMid)?.messages ?? null);
 }
 
-async function saveDiskMessages(chatMid: string, messages: Json[]) {
+function saveDiskMessages(chatMid: string, messages: Json[]): Promise<void> {
   try {
-    const merged = await history.save(chatMid, messages);
-    msgCache.set(chatMid, { at: Date.now(), messages: merged });
+    msgCache.set(chatMid, { at: Date.now(), messages });
   } catch (error) {
     console.error("[messages-cache]", chatMid, error);
   }
+  return Promise.resolve();
 }
 
 let contactsAt = 0;
@@ -1600,160 +1586,6 @@ async function upsertChatFromContact(mid: string) {
   if (row.picturePath && !row.avatarPath) hydrateAvatars([row]);
 }
 
-/**
- * Hydrate media for a just-received TalkMessage using tm.getData() directly.
- * refetchMessageData() walks recent history and often misses the brand-new id.
- */
-async function hydrateLiveMedia(
-  tm: TalkMessage,
-  message: Json,
-  chatMid: string,
-) {
-  if (!client || !stdoutAlive) return;
-  await saveDiskMessages(chatMid, [{
-    ...message,
-    rawMessage: packRaw(tm.raw),
-  }]);
-  if (["IMAGE", "VIDEO"].includes(normType(message.contentType))) {
-    const gen = workGen;
-    await downloads.run(async () => {
-      if (gen !== workGen || !client) return;
-      await hydrateLiveMediaDirect(tm, message, chatMid);
-      if (gen === workGen && client) await saveDiskMessages(chatMid, [message]);
-    });
-  } else {
-    await hydrateMedia([message], chatMid, { isolated: true });
-  }
-}
-
-async function hydrateLiveMediaDirect(
-  tm: TalkMessage,
-  message: Json,
-  chatMid: string,
-) {
-  if (!client || !stdoutAlive) return;
-  const id = String(message.id ?? "");
-  const ct = normType(message.contentType);
-  if (!id) return;
-
-  if (ct === "STICKER" || ct === "AUDIO" || ct === "FILE") {
-    await hydrateMedia([message], chatMid, { isolated: true });
-    return;
-  }
-
-  const fail = () => {
-    if (!stdoutAlive) return;
-    emitEvent("media_failed", { chatMid, messageId: id });
-  };
-
-  try {
-    let path = ct === "VIDEO"
-      ? ((await existingFile(mediaDest(id, "mp4")))
-        ? await existingImage(thumbDest(id))
-        : null)
-      : await existingFullImage(id);
-
-    if (!path) {
-      try {
-        const blob = await tm.getData(false);
-        const buf = new Uint8Array(await blob.arrayBuffer());
-        if (ct === "VIDEO") {
-          path = await outgoingMedia.materializeVideoPreview(id, buf);
-        } else if (isImageBytes(buf)) {
-          path = await writeFullImage(id, buf, blob.type || "");
-        } else if (buf.length > 1024) {
-          // Some video payloads lack an image magic header.
-          path = await outgoingMedia.materializeVideoPreview(id, buf);
-        }
-      } catch (e) {
-        console.error("[hydrateLive getData]", id, e);
-      }
-    }
-
-    if (!path && typeof message.imageUrl === "string" && message.imageUrl) {
-      path = await cacheUrl(String(message.imageUrl), fullDest(id, "jpg"));
-      if (path && (await isPreviewOrThumbImage(path))) {
-        try {
-          await Deno.copyFile(path, thumbDest(id));
-          await Deno.remove(path);
-        } catch { /* ignore */ }
-        path = null;
-      }
-    }
-
-    if (!path && client) {
-      try {
-        const file = await client.base.obs.downloadMessageData({
-          messageId: id,
-          isPreview: true,
-          isSquare: false,
-        });
-        const buf = new Uint8Array(await file.arrayBuffer());
-        if (buf.length > 32 && isImageBytes(buf)) {
-          await writeImageFile(thumbDest(id), buf);
-        }
-      } catch (e) {
-        console.error("[hydrateLive obs preview]", id, e);
-      }
-    }
-
-    if (!path) {
-      const got = await refetchMessageData(chatMid, id, {
-        allowNonImage: ct === "VIDEO",
-      });
-      if (got) {
-        if (ct === "VIDEO") {
-          path = await outgoingMedia.materializeVideoPreview(id, got.buf);
-        } else if (isImageBytes(got.buf)) {
-          path = await writeFullImage(id, got.buf, got.mime);
-        }
-      }
-    }
-
-    if (!path) {
-      path = await existingImage(thumbDest(id));
-    }
-
-    if (!path) {
-      fail();
-      return;
-    }
-
-    const uiPath = await uiMediaPath(id, path);
-    const imagePath = uiPath || path;
-    let filePath: string | null = null;
-    if (ct === "VIDEO") {
-      filePath = await existingFile(mediaDest(id, "mp4"));
-    } else if (!path.includes(".thumb.")) {
-      filePath = path;
-    }
-
-    message.imagePath = imagePath;
-    message.needsMedia = false;
-    if (filePath) message.filePath = filePath;
-
-    const cached = msgCache.get(chatMid);
-    if (cached) {
-      const row = cached.messages.find((x) => String(x.id) === id);
-      if (row) {
-        row.imagePath = imagePath;
-        row.needsMedia = false;
-        if (filePath) row.filePath = filePath;
-      }
-    }
-
-    emitEvent("media_ready", {
-      chatMid,
-      messageId: id,
-      imagePath,
-      filePath,
-    });
-  } catch (e) {
-    console.error("[hydrateLiveMedia]", id, e);
-    fail();
-  }
-}
-
 function sentMessagePayload(
   sent:
     | { id?: unknown; createdTime?: unknown; contentType?: unknown }
@@ -1800,10 +1632,10 @@ async function handle(req: Json) {
       case "list_chats":
         await commands.listChats(id, !!params.force);
         break;
-      case "fetch_messages":
+      case "bridge_fetch_page":
         ok(
           id,
-          await historyService.fetchPage(
+          await bridge.fetchPage(
             String(params.chatMid ?? ""),
             params.before as
               | { messageId: string; deliveredTime: string }
@@ -1811,8 +1643,10 @@ async function handle(req: Json) {
           ),
         );
         break;
+      case "bridge_download":
+        ok(id, await bridge.download(params.message as Json));
+        break;
       case "send_message":
-        historyService.invalidate(String(params.chatMid ?? ""));
         await commands.sendMessage(
           id,
           String(params.chatMid ?? ""),
@@ -1830,7 +1664,6 @@ async function handle(req: Json) {
         break;
       }
       case "send_audio":
-        historyService.invalidate(String(params.chatMid ?? ""));
         await outgoingMedia.sendAudio(
           id,
           String(params.chatMid ?? ""),
@@ -1839,7 +1672,6 @@ async function handle(req: Json) {
         );
         break;
       case "send_media":
-        historyService.invalidate(String(params.chatMid ?? ""));
         await outgoingMedia.sendMedia(
           id,
           String(params.chatMid ?? ""),
@@ -1858,7 +1690,6 @@ async function handle(req: Json) {
         );
         break;
       case "send_sticker":
-        historyService.invalidate(String(params.chatMid ?? ""));
         await stickers.send(
           id,
           String(params.chatMid ?? ""),
@@ -1949,7 +1780,6 @@ async function handle(req: Json) {
         break;
       }
       case "clear_cache": {
-        historyService.clear();
         const kind = String(params.kind ?? "all");
         const wipe = async (dir: string) => {
           try {
@@ -1965,7 +1795,6 @@ async function handle(req: Json) {
         if (kind === "media" || kind === "all") await wipe(mediaDir);
         if (kind === "stickers" || kind === "all") await wipe(stickerDir);
         if (kind === "avatars" || kind === "all") await wipe(avatarDir);
-        if (kind === "messages" || kind === "all") await wipe(msgDiskDir);
         if (kind === "chats" || kind === "all") {
           try {
             await Deno.remove(chatCachePath);
@@ -2080,7 +1909,6 @@ async function handle(req: Json) {
         break;
       }
       case "logout":
-        historyService.clear();
         cancelBackgroundWork();
         stickers.resetOwnedCache();
         try {
