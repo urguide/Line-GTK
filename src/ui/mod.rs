@@ -1690,6 +1690,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     }
 
     let already_open = state.current_chat.borrow().as_deref() == Some(chat.mid.as_str());
+    let _ = state.sidecar.focus_chat(&chat.mid);
     if already_open {
         let _ = state.sidecar.sync_receipts(&chat.mid);
         // Tap again while already open: mark read without reloading the thread.
@@ -1745,7 +1746,9 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
         *state.history_loading.borrow_mut() = false;
         apply_messages(state, page.messages);
     } else {
-        set_msg_state(state, "loading", None);
+        // Open the conversation shell immediately. Text and media populate independently.
+        set_msg_state(state, "list", None);
+        state.chat_subtitle.set_text(&crate::i18n::t("refreshing"));
     }
     if !fresh && let Err(e) = message_cache::request(state, &chat.mid) {
         if state.message_index.borrow().is_empty() {

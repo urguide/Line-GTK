@@ -412,6 +412,16 @@ impl Sidecar {
         )
     }
 
+    pub fn focus_chat(&self, chat: &str) -> Result<()> {
+        self.core
+            .commands
+            .send(line_rust_core::sync::Command::FocusChat {
+                chat: chat.into(),
+                generation: self.generation.load(Ordering::SeqCst),
+            })?;
+        Ok(())
+    }
+
     pub fn fetch_older_messages(&self, chat_mid: &str, before: Value) -> Result<u64> {
         self.request(
             "fetch_messages",

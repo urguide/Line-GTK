@@ -16,6 +16,7 @@ export function createApi(
     TalkMessage.fromRawTalk(raw, client),
 ) {
   let busy = false;
+  const fetches = new Map<string, AbortController>();
   const memoryDownloads = new Map<string, Blob>();
   const memoryUploads = new Map<string, Uint8Array<ArrayBuffer>[]>();
   async function uploadBlob(p: Json): Promise<Blob> {
@@ -62,6 +63,8 @@ export function createApi(
       case "bridge_notes":
         return await notesRpc(c, String(p.action), p, transfer);
       case "bridge_fetch_page": {
+        const signal = fetches.get(String(p.fetchToken))?.signal;
+        signal?.throwIfAborted();
         let end = p.before as
           | { messageId: string; deliveredTime: string }
           | null;
@@ -69,6 +72,7 @@ export function createApi(
           const boxes = await c.base.talk.getMessageBoxes({
             messageBoxListRequest: {},
           });
+          signal?.throwIfAborted();
           const last = boxes.messageBoxes.find((box) => box.id === p.chatMid)
             ?.lastDeliveredMessageId;
           if (last) {
@@ -90,8 +94,10 @@ export function createApi(
             withReadCount: true,
           },
         });
+        signal?.throwIfAborted();
         const messages = [];
         for (const message of raw) {
+          signal?.throwIfAborted();
           if (p.before && String(message.id) === end.messageId) continue;
           // Snapshot before decoding: linejs may mutate metadata/chunks before
           // throwing. Keep the original available for later key recovery.
@@ -431,12 +437,35 @@ export function createApi(
     }
   }
   return async (method: string, p: Json) => {
-    if (busy) throw new Error("bridge_busy");
-    busy = true;
+    if (method === "bridge_cancel_fetch") {
+      fetches.get(String(p.fetchToken))?.abort();
+      return {};
+    }
+    // Read-only requests and media transfers must not serialize navigation.
+    // Keep mutations exclusive: their sequence numbers and uploads are ordered.
+    const mutation = [
+      "bridge_send_text",
+      "bridge_send_sticker",
+      "bridge_unsend",
+      "bridge_friend_request",
+      "bridge_mute",
+      "bridge_postback",
+      "bridge_upload_plain_media",
+      "bridge_send_media",
+      "bridge_send_media_e2ee_fallback",
+      "bridge_notes",
+    ].includes(method);
+    if (mutation && busy) throw new Error("bridge_busy");
+    if (mutation) busy = true;
+    const token = method === "bridge_fetch_page" && p.fetchToken != null
+      ? String(p.fetchToken)
+      : null;
+    if (token !== null) fetches.set(token, new AbortController());
     try {
       return await rpc(method, p);
     } finally {
-      busy = false;
+      if (mutation) busy = false;
+      if (token !== null) fetches.delete(token);
     }
   };
 }

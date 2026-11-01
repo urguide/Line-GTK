@@ -104,6 +104,7 @@ fn hide_chat(state: &AppState, mid: &str) {
     }
     if state.current_chat.borrow().as_deref() == Some(mid) {
         *state.current_chat.borrow_mut() = None;
+        let _ = state.sidecar.focus_chat("");
         mentions::reset(state);
         clear_reply(state);
         clear_messages(state);

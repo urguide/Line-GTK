@@ -550,20 +550,74 @@ Deno.test("API forwards exact read receipt, reply and withdrawal IDs", async () 
   });
   assertEquals(seen[2], { messageId: "9007199254740993", seq: 4 });
 });
-Deno.test("API rejects concurrent requests rather than introducing a second queue", async () => {
+Deno.test("read requests proceed while another read is stalled", async () => {
   const gate = Promise.withResolvers<unknown>();
   const client = {
-    base: { talk: { getAllContactIds: () => gate.promise } },
+    base: {
+      talk: {
+        getAllContactIds: () => gate.promise,
+        getContact: () => Promise.resolve({ mid: "u2" }),
+      },
+    },
   } as unknown as Client;
   const api = createApi(() => client, "/unused");
   const first = api("bridge_contact_ids", {});
+  assertEquals(await api("bridge_contact", { mid: "u2" }), { mid: "u2" });
+  gate.resolve([]);
+  await first;
+});
+
+Deno.test("cancelled history stops before fetching and decoding the old chat", async () => {
+  const gate = Promise.withResolvers<unknown>();
+  let pages = 0;
+  const client = {
+    base: {
+      talk: {
+        getMessageBoxes: () => gate.promise,
+        getPreviousMessagesV2WithRequest: () => {
+          pages++;
+          return Promise.resolve([]);
+        },
+      },
+    },
+  } as unknown as Client;
+  const api = createApi(() => client, "/unused");
+  const pending = api("bridge_fetch_page", {
+    chatMid: "old",
+    fetchToken: "42",
+  });
+  await api("bridge_cancel_fetch", { fetchToken: "42" });
+  const rejected = assertRejects(() => pending, DOMException);
+  gate.resolve({
+    messageBoxes: [{
+      id: "old",
+      lastDeliveredMessageId: { messageId: "1", deliveredTime: "1" },
+    }],
+  });
+  await rejected;
+  assertEquals(pages, 0);
+});
+
+Deno.test("mutations remain exclusive while read requests stay available", async () => {
+  const gate = Promise.withResolvers<unknown>();
+  const client = {
+    base: {
+      talk: {
+        sendMessage: () => gate.promise,
+        getAllContactIds: () => Promise.resolve(["u1"]),
+      },
+    },
+  } as unknown as Client;
+  const api = createApi(() => client, "/unused");
+  const pending = api("bridge_send_text", { chatMid: "u1", text: "hello" });
   await assertRejects(
-    () => api("bridge_contact_ids", {}),
+    () => api("bridge_send_text", { chatMid: "u1", text: "again" }),
     Error,
     "bridge_busy",
   );
-  gate.resolve([]);
-  await first;
+  assertEquals(await api("bridge_contact_ids", {}), ["u1"]);
+  gate.resolve({ id: "1" });
+  await pending;
 });
 
 Deno.test("contact fallbacks expose unmodified profile data to Rust", async () => {

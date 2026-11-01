@@ -484,17 +484,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     }
                     match prog.as_str() {
                         "loading" => {
-                            if state.message_list.first_child().is_none()
-                                && state
-                                    .message_cache
-                                    .borrow_mut()
-                                    .get(current.as_deref().unwrap_or_default())
-                                    .is_none()
-                            {
-                                set_msg_state(state, "loading", None);
-                            } else {
-                                state.chat_subtitle.set_text(&crate::i18n::t("refreshing"));
-                            }
+                            state.chat_subtitle.set_text(&crate::i18n::t("refreshing"));
                         }
                         "ready" => {
                             if state.message_list.first_child().is_some() {
@@ -922,6 +912,9 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
                 state.read_counts.borrow_mut().clear();
             }
             *state.session_ready.borrow_mut() = true;
+            let _ = state
+                .sidecar
+                .focus_chat(state.current_chat.borrow().as_deref().unwrap_or_default());
             if let Some(chat) = state.current_chat.borrow().as_deref() {
                 let _ = state.sidecar.sync_receipts(chat);
             }

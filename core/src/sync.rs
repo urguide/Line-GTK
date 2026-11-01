@@ -12,10 +12,20 @@ use std::time::{Duration, Instant};
 
 mod expressions;
 mod receipts;
+mod scheduler;
 
 /// Implemented by the host's IPC transport; no GTK or JavaScript scheduling here.
-pub trait Transport: Send + 'static {
+pub trait Transport: Send + Sync + 'static {
     fn call(&self, method: &str, params: Value, generation: u64) -> Result<Value>;
+    fn call_cancellable(
+        &self,
+        method: &str,
+        params: Value,
+        generation: u64,
+        _cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Value> {
+        self.call(method, params, generation)
+    }
     fn materialize(&self, message: &Value, generation: u64) -> Result<Value>;
     fn emit(&self, event: Value);
     fn memory_media(&self, _account: &str, _chat: &str) -> bool {
@@ -31,6 +41,10 @@ pub trait Transport: Send + 'static {
 }
 
 pub enum Command {
+    FocusChat {
+        chat: String,
+        generation: u64,
+    },
     PeerRead {
         chat: String,
         reader: String,
@@ -121,7 +135,7 @@ enum Work {
 pub struct Engine<T: Transport> {
     policy: crate::cache_policy::CachePolicy,
     store: Store,
-    transport: T,
+    transport: Arc<T>,
     generation: Arc<AtomicU64>,
     session_generation: u64,
     account: String,
@@ -140,6 +154,7 @@ pub struct Engine<T: Transport> {
     receipts_flush_at: Instant,
     receipts_synced: HashMap<String, Instant>,
     queued_receipts: HashSet<String>,
+    scheduler: scheduler::Scheduler,
 }
 
 impl<T: Transport> Engine<T> {
@@ -152,7 +167,7 @@ impl<T: Transport> Engine<T> {
         Self {
             policy: crate::cache_policy::CachePolicy::default(),
             store,
-            transport,
+            transport: Arc::new(transport),
             generation,
             legacy,
             session_generation: 0,
@@ -171,6 +186,7 @@ impl<T: Transport> Engine<T> {
             receipts_flush_at: Instant::now(),
             receipts_synced: HashMap::new(),
             queued_receipts: HashSet::new(),
+            scheduler: scheduler::Scheduler::default(),
         }
     }
 
@@ -357,6 +373,11 @@ impl<T: Transport> Engine<T> {
 
     fn command(&mut self, command: Command) -> Result<bool> {
         match command {
+            Command::FocusChat { chat, generation } => {
+                self.valid(generation)?;
+                self.scheduler.focus(chat);
+                self.scheduler.enabled = true;
+            }
             Command::FlushReceipts { done } => {
                 let _ = done.send(self.flush_receipts());
             }
@@ -394,7 +415,26 @@ impl<T: Transport> Engine<T> {
                 mut params,
                 generation,
             } => {
+                if self.scheduler.enabled
+                    && matches!(
+                        method.as_str(),
+                        "sender_profile"
+                            | "profile_avatar"
+                            | "expression_icon"
+                            | "emoji_images"
+                            | "list_chat_members"
+                    )
+                {
+                    self.scheduler
+                        .operations
+                        .push_back((id, method, params, generation));
+                    return Ok(true);
+                }
                 if method == "mark_read" {
+                    if self.scheduler.enabled {
+                        self.scheduler.reads.push_back((id, params, generation));
+                        return Ok(true);
+                    }
                     let result = self.mark_read(&params, generation);
                     self.response(id, Ok(result), generation);
                     return Ok(true);
@@ -740,6 +780,7 @@ impl<T: Transport> Engine<T> {
                     if method == "clear_cache" {
                         let kind = params["kind"].as_str().unwrap_or("all");
                         if matches!(kind, "all" | "messages") {
+                            self.scheduler.clear_work();
                             self.background.clear();
                             self.expression_scheduled = false;
                             self.queued_media.clear();
@@ -816,6 +857,7 @@ impl<T: Transport> Engine<T> {
                 self.expression_jobs.clear();
                 self.queued_media.clear();
                 self.queued_gaps.clear();
+                self.scheduler.reset();
                 self.account = account;
                 self.session_generation = generation;
                 self.transport.session(&self.account, generation);
@@ -832,6 +874,16 @@ impl<T: Transport> Engine<T> {
                 before,
                 generation,
             } => {
+                if self.scheduler.enabled {
+                    self.scheduler.pages.push_back(scheduler::PageJob {
+                        id,
+                        chat,
+                        before,
+                        generation,
+                        gap: None,
+                    });
+                    return Ok(true);
+                }
                 let result = self
                     .fetch(&chat, before.as_ref(), generation)
                     .and_then(|mut page| {
@@ -870,6 +922,17 @@ impl<T: Transport> Engine<T> {
                 message,
                 generation,
             } => {
+                if self.scheduler.enabled {
+                    let result = self.store.message(&chat, &message)?;
+                    if let Some(row) = result {
+                        self.scheduler
+                            .downloads
+                            .push_back((id, chat, row, generation));
+                    } else {
+                        self.response(id, Err(anyhow::anyhow!("message unavailable")), generation);
+                    }
+                    return Ok(true);
+                }
                 let result = (|| {
                     self.valid(generation)?;
                     let row = self
@@ -924,6 +987,7 @@ impl<T: Transport> Engine<T> {
             Command::Clear { id, generation } => {
                 let result = (|| {
                     self.valid(generation)?;
+                    self.scheduler.clear_work();
                     self.background.clear();
                     self.expression_scheduled = false;
                     self.queued_media.clear();
@@ -1014,6 +1078,7 @@ impl<T: Transport> Engine<T> {
 
     pub fn run(mut self, rx: mpsc::Receiver<Command>) {
         loop {
+            self.finish_async();
             if self.receipts_flush_at.elapsed() >= Duration::from_secs(10) {
                 if let Err(error) = self.flush_receipts() {
                     eprintln!("[core receipts] {error}");
@@ -1035,12 +1100,24 @@ impl<T: Transport> Engine<T> {
                         self.queued_gaps.clear();
                         self.queued_receipts.clear();
                     }
-                    if let Some(work) = self.background.pop_front() {
+                    if self.scheduler.enabled && self.start_async() {
+                        continue;
+                    }
+                    let work = if self.scheduler.enabled {
+                        self.next_background()
+                    } else {
+                        self.background.pop_front()
+                    };
+                    if let Some(work) = work {
                         if let Err(e) = self.background(work) {
                             eprintln!("[core background] {e}");
                         }
                     } else {
-                        match rx.recv_timeout(Duration::from_secs(1)) {
+                        match rx.recv_timeout(if self.scheduler.enabled {
+                            Duration::from_millis(10)
+                        } else {
+                            Duration::from_secs(1)
+                        }) {
                             Ok(command) => match self.command(command) {
                                 Ok(false) => break,
                                 Err(e) => eprintln!("[core] {e}"),

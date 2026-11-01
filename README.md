@@ -363,6 +363,13 @@ in the background. Incoming messages update warm pages and queue a debounced
 latest-page prefetch, excluding muted and hidden chats. Prefetching does not mark
 messages as read. The cache is cleared on logout, account changes, and reconnect.
 
+Cold conversations open their shell immediately and populate messages before
+images and videos finish downloading. Page reads and media hydration use separate,
+bounded workers. Switching chats prioritizes the selected conversation and defers
+the previous page request; queued media and history repair resume at lower
+priority. An already-running media transfer may finish in the background without
+blocking the new conversation's messages.
+
 ## Reply to messages
 
 Press **Enter** to send a message, or **Shift+Enter** to insert a new line.

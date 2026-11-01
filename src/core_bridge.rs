@@ -335,8 +335,26 @@ impl Transport for Ipc {
         self.application_operation(method, params, generation)
     }
     fn call(&self, method: &str, params: Value, generation: u64) -> Result<Value> {
+        self.call_cancellable(
+            method,
+            params,
+            generation,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+    }
+
+    fn call_cancellable(
+        &self,
+        method: &str,
+        mut params: Value,
+        generation: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Value> {
         self.active(generation)?;
         let id = self.ids.fetch_add(1, Ordering::SeqCst);
+        if method == "bridge_fetch_page" {
+            params["fetchToken"] = json!(id.to_string());
+        }
         let (tx, rx) = mpsc::sync_channel(1);
         self.replies
             .lock()
@@ -362,6 +380,21 @@ impl Transport for Ipc {
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(300);
         let result = loop {
+            if cancel.load(Ordering::SeqCst) {
+                if method == "bridge_fetch_page"
+                    && let Ok(mut input) = self.stdin.lock()
+                    && let Some(input) = input.as_mut()
+                {
+                    let cancel_id = self.ids.fetch_add(1, Ordering::SeqCst);
+                    let _ = writeln!(
+                        input,
+                        "{}",
+                        json!({"id":cancel_id,"method":"bridge_cancel_fetch","params":{"fetchToken":id.to_string()}})
+                    );
+                    let _ = input.flush();
+                }
+                break Err(anyhow::anyhow!("chat_deferred"));
+            }
             if let Err(e) = self.active(generation) {
                 break Err(e);
             }
@@ -384,7 +417,14 @@ impl Transport for Ipc {
                 _ => {}
             }
         };
-        self.replies.lock().ok().map(|mut r| r.remove(&id));
+        // Keep a tombstone sender for cancelled RPCs: their late response must
+        // be consumed here rather than surface as an unrelated UI error.
+        if !result
+            .as_ref()
+            .is_err_and(|e| e.to_string() == "chat_deferred")
+        {
+            self.replies.lock().ok().map(|mut r| r.remove(&id));
+        }
         result
     }
 

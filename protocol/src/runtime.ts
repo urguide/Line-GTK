@@ -156,7 +156,9 @@ async function handle(request: Json) {
         throw new Error(`unknown_method:${method}`);
     }
   } catch (error) {
-    event("protocol_error", errorReport(error, "request"));
+    if (!(error instanceof DOMException && error.name === "AbortError")) {
+      event("protocol_error", errorReport(error, "request"));
+    }
     fail(id, error);
   }
 }
