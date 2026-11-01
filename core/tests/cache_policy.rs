@@ -49,7 +49,10 @@ fn every_mode_uses_expected_freshness_and_retention_values() {
         assert_eq!(p.messages, messages * MINUTE);
         assert_eq!(p.chats, chats * MINUTE);
         assert_eq!(p.contacts, contacts * MINUTE);
-        assert_eq!(p.disk_messages, if mode == "smart" { i64::MAX } else { disk });
+        assert_eq!(
+            p.disk_messages,
+            if mode == "smart" { i64::MAX } else { disk }
+        );
         assert_eq!(p.disk_chats, disk);
         assert_eq!(p.owned_stickers, owned);
         assert_eq!(p.animation_miss, miss);
@@ -132,8 +135,7 @@ fn permanent_history_survives_new_writes_and_restart_but_allows_explicit_removal
         let time = Arc::new(AtomicI64::new(START));
         let clock = time.clone();
         let mut store =
-            Store::open_with_clock(&path, Arc::new(move || clock.load(Ordering::SeqCst)))
-                .unwrap();
+            Store::open_with_clock(&path, Arc::new(move || clock.load(Ordering::SeqCst))).unwrap();
         store.set_account("me");
         store.set_retention(mode);
         let before = Cursor {
@@ -148,8 +150,7 @@ fn permanent_history_survives_new_writes_and_restart_but_allows_explicit_removal
         drop(store);
 
         let mut store =
-            Store::open_with_clock(&path, Arc::new(move || time.load(Ordering::SeqCst)))
-                .unwrap();
+            Store::open_with_clock(&path, Arc::new(move || time.load(Ordering::SeqCst))).unwrap();
         store.set_account("me");
         // Read with unlimited retention to verify whether cleanup actually
         // deleted the old rows, rather than merely filtering them by age.
