@@ -313,6 +313,7 @@ impl Sidecar {
                 | "list_chat_members"
                 | "list_friends"
                 | "profile_avatar"
+                | "sender_profile"
                 | "list_stickers"
                 | "expression_library"
                 | "download_expression"

@@ -78,6 +78,7 @@ pub(super) struct AppState {
     pub current_chat: Rc<RefCell<Option<String>>>,
     pub chats: Rc<RefCell<Vec<ChatInfo>>>,
     pub chat_avatars: Rc<RefCell<HashMap<String, gtk::Picture>>>,
+    pub sender_ui: Rc<RefCell<super::senders::SenderUi>>,
     pub chat_previews: Rc<RefCell<HashMap<String, gtk::Label>>>,
     pub chat_unread_badges: Rc<RefCell<HashMap<String, gtk::Label>>>,
     pub media_slots: Rc<RefCell<HashMap<String, gtk::Box>>>,
@@ -182,6 +183,10 @@ pub(super) struct PendingNotif {
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    SenderProfile {
+        mid: String,
+        generation: u64,
+    },
     ChatMembers {
         generation: u64,
     },

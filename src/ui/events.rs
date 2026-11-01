@@ -248,6 +248,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
         }
         ProtocolEvent::AvatarReady { mid, avatar_path } => {
+            senders::avatar_ready(state, &mid, &avatar_path);
             if state.self_mid.borrow().as_deref() == Some(mid.as_str()) {
                 *state.self_avatar_path.borrow_mut() = Some(avatar_path.clone());
                 if std::path::Path::new(&avatar_path).exists() {
@@ -526,6 +527,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::SenderProfile { mid, generation }) = pending.as_ref() {
+                senders::response(state, mid, *generation, ok, &result);
+                return;
+            }
             if let Some(Pending::ChatMembers { generation }) = pending.as_ref() {
                 mentions::response(state, *generation, ok, &result);
                 return;
@@ -647,7 +652,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 return;
             }
             match pending {
-                Some(Pending::ChatMembers { .. }) => unreachable!("member responses handled above"),
+                Some(Pending::ChatMembers { .. } | Pending::SenderProfile { .. }) => {
+                    unreachable!("profile responses handled above")
+                }
                 Some(Pending::Notes { .. }) => unreachable!("notes responses handled above"),
                 Some(Pending::AddFriend) => {
                     toast(state, &crate::i18n::t("friend_ok"));
@@ -848,6 +855,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
         Ok(profile) => {
             if state.self_mid.borrow().as_deref() != Some(profile.mid.as_str()) {
                 mentions::reset(state);
+                senders::reset(state);
                 state.read_counts.borrow_mut().clear();
             }
             *state.session_ready.borrow_mut() = true;

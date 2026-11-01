@@ -13,6 +13,7 @@ mod mentions;
 mod messages;
 mod notes;
 mod notifications;
+mod senders;
 mod settings;
 mod shell;
 mod state;
@@ -172,6 +173,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         current_chat: Rc::new(RefCell::new(None)),
         chats: Rc::new(RefCell::new(Vec::new())),
         chat_avatars: Rc::new(RefCell::new(HashMap::new())),
+        sender_ui: Rc::new(RefCell::new(senders::SenderUi::default())),
         chat_previews: Rc::new(RefCell::new(HashMap::new())),
         chat_unread_badges: Rc::new(RefCell::new(HashMap::new())),
         media_slots: Rc::new(RefCell::new(HashMap::new())),
@@ -1703,6 +1705,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     clear_messages(state);
     *state.msg_list_fp.borrow_mut() = None;
     *state.history_generation.borrow_mut() += 1;
+    senders::reset(state);
     *state.history_cursor.borrow_mut() = None;
     *state.history_loading.borrow_mut() = true;
     *state.history_has_more.borrow_mut() = false;

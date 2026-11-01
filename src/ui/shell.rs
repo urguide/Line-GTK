@@ -735,6 +735,14 @@ pub fn load_css() {
         .line-title-name {
             font-weight: 600;
         }
+        .line-msg-avatar {
+            border-radius: 999px;
+            background: alpha(@borders, 0.35);
+        }
+        .line-msg-sender {
+            font-weight: 600;
+            opacity: 0.8;
+        }
         .line-avatar-frame {
             border-radius: 999px;
             overflow: hidden;

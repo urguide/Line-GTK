@@ -268,6 +268,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             gtk::Align::Start
         })
         .build();
+    senders::append(state, msg, &outer, &content);
     if let Some(id) = msg.related_message_id.as_deref() {
         let quote = gtk::Label::builder()
             .label(reply_description(state, id))
@@ -1589,6 +1590,7 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 }
 
 pub(super) fn clear_messages(state: &AppState) {
+    senders::clear_slots(state);
     state.message_index.borrow_mut().clear();
     if state.current_chat.borrow().is_none() {
         clear_reply(state);

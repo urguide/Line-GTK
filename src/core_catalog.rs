@@ -693,6 +693,15 @@ impl Ipc {
                 Ok(json!({"resources":images}))
             }
             "notes" => self.notes_operation(p, generation),
+            "sender_profile" => {
+                let mid = p["mid"].as_str().context("sender ID missing")?;
+                let profile = self.call("bridge_contact", json!({"mid":mid}), generation)?;
+                let name = line_rust_core::catalog::name(&profile).unwrap_or(mid);
+                let avatar =
+                    self.avatar(mid, line_rust_core::catalog::picture(&profile), generation);
+                self.active(generation)?;
+                Ok(json!({"mid":mid,"name":name,"avatarPath":avatar}))
+            }
             "profile_avatar" => {
                 let mid = p["mid"].as_str().context("profile ID missing")?;
                 let picture = line_rust_core::catalog::picture(&p)
