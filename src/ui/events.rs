@@ -53,6 +53,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         }
         ProtocolEvent::SessionFailed { error } => {
             notes::close(state);
+            super::expressions::close(state);
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
             let msg = if error.contains("relogin_android_required") {
@@ -598,6 +599,28 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     }
                 }
                 let err = error.as_deref().unwrap_or("request failed");
+                match pending.as_ref() {
+                    Some(Pending::EmojiImages { .. }) => return,
+                    Some(Pending::ExpressionLibrary { ui }) => {
+                        if let Some(ui) = ui.upgrade() {
+                            super::expressions::load_failed(&ui, err);
+                        }
+                    }
+                    Some(Pending::ExpressionDownload { ui, package }) => {
+                        if let Some(ui) = ui.upgrade() {
+                            super::expressions::download_done(state, &ui, package, Err(err));
+                        }
+                        return;
+                    }
+                    Some(Pending::ListStickers { kind }) if state.sticker_popover.is_visible() => {
+                        fill_sticker_popover(
+                            state,
+                            &serde_json::json!({"packs":[],"error":err}),
+                            kind,
+                        );
+                    }
+                    _ => {}
+                }
                 if matches!(pending, Some(Pending::Unsend { .. })) {
                     toast(state, &crate::i18n::tf("unsend_failed", &[("error", err)]));
                 } else if err.contains("sticker_not_owned")
@@ -698,8 +721,25 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         pin_messages_to_latest(state);
                     }
                 }
-                Some(Pending::ListStickers) => {
-                    fill_sticker_popover(state, &result);
+                Some(Pending::ListStickers { kind }) => {
+                    if state.sticker_popover.is_visible() {
+                        fill_sticker_popover(state, &result, &kind);
+                    }
+                }
+                Some(Pending::ExpressionLibrary { ui }) => {
+                    if let Some(ui) = ui.upgrade() {
+                        super::expressions::fill_library(&ui, &result);
+                    }
+                }
+                Some(Pending::ExpressionDownload { ui, package }) => {
+                    if let Some(ui) = ui.upgrade() {
+                        super::expressions::download_done(state, &ui, &package, Ok(&result));
+                    }
+                }
+                Some(Pending::EmojiImages { view, text }) => {
+                    if let Some(view) = view.upgrade() {
+                        super::expressions::render_inline(&view, &text, &result["resources"]);
+                    }
                 }
                 Some(Pending::DownloadMedia {
                     action,
@@ -739,6 +779,7 @@ const MAX_SIDECAR_RECOVERY_ATTEMPTS: u8 = 3;
 
 pub(super) fn schedule_sidecar_recovery(state: &AppState) {
     notes::close(state);
+    super::expressions::close(state);
     *state.session_ready.borrow_mut() = false;
     state.pending.borrow_mut().clear();
     hide_upload_progress(state);
@@ -876,6 +917,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
     notes::close(state);
+    super::expressions::close(state);
     state.stack.set_visible_child_name("login");
     login::show_qr_stage(&state.login);
     state.login.hint.set_text(hint);

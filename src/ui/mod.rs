@@ -5,6 +5,7 @@ mod composer_media;
 mod diagnostics;
 mod downloads;
 mod events;
+mod expressions;
 mod friends;
 mod login;
 mod media;
@@ -93,7 +94,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
 
     let has_saved_auth = saved_auth_exists(&data_dir);
     shell.brand_label.set_text(&crate::i18n::t("app_name"));
-    apply_brand_icon(&shell.brand_icon, &repo_root);
+    apply_brand_icon(&shell.brand_icon);
     if has_saved_auth {
         // Already linked: open the main UI immediately while the sidecar restores.
         stack.set_visible_child_name("shell");
@@ -206,6 +207,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         attach_btn: shell.attach_btn,
         sticker_btn: shell.sticker_btn,
         sticker_popover: shell.sticker_popover,
+        expression_ui: Rc::new(RefCell::new(None)),
+        emoji_catalog: Rc::new(RefCell::new(serde_json::Value::Null)),
         call_btn: shell.call_btn,
         mute_btn: shell.mute_btn,
         notes_btn: shell.notes_btn,
@@ -292,21 +295,15 @@ fn register_app_icons(repo_root: &std::path::Path) {
     gtk::Window::set_default_icon_name("line-rust");
 }
 
-fn apply_brand_icon(image: &gtk::Image, repo_root: &std::path::Path) {
+fn apply_brand_icon(image: &gtk::Image) {
+    // Load the bundled artwork directly: a system theme may contain an older
+    // icon with the same name, even after this application has been updated.
+    let bytes = glib::Bytes::from_static(include_bytes!(
+        "../../assets/icons/hicolor/64x64/apps/line-rust.png"
+    ));
+    let texture = gdk::Texture::from_bytes(&bytes).expect("bundled brand icon");
+    image.set_paintable(Some(&texture));
     image.set_pixel_size(22);
-    if let Some(display) = gtk::gdk::Display::default() {
-        let theme = gtk::IconTheme::for_display(&display);
-        if theme.has_icon("line-rust") {
-            image.set_icon_name(Some("line-rust"));
-            return;
-        }
-    }
-    let png = repo_root.join("assets/icons/hicolor/64x64/apps/line-rust.png");
-    if png.is_file() {
-        image.set_from_file(Some(&png));
-    } else {
-        image.set_icon_name(Some("line-rust"));
-    }
 }
 
 fn apply_close_behavior(state: &AppState) {
@@ -966,6 +963,8 @@ fn send_current(state: &AppState) {
         target.chat_mid == chat_mid && !state.unsent_msg_ids.borrow().contains(&target.message.id)
     });
     let related_message_id = reply.as_ref().map(|target| target.message.id.clone());
+    let (display_text, metadata) =
+        line_rust_core::expressions::compose(&text, &state.emoji_catalog.borrow());
     match state
         .sidecar
         .send_message(&chat_mid, &text, related_message_id.as_deref())
@@ -977,7 +976,7 @@ fn send_current(state: &AppState) {
                 &chat_mid,
                 MessageInfo {
                     id: String::new(),
-                    text: text.clone(),
+                    text: display_text,
                     related_message_id,
                     from: String::new(),
                     to: chat_mid.clone(),
@@ -990,6 +989,10 @@ fn send_current(state: &AppState) {
                     file_path: None,
                     duration_ms: None,
                     flex: None,
+                    emojis: line_rust_core::expressions::resources(&metadata)
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default(),
                 },
             );
             if let Some(Pending::Send { draft, .. }) = state.pending.borrow_mut().get_mut(&id) {
@@ -1123,7 +1126,7 @@ fn apply_ui_language(state: &AppState) {
     refresh_call_controls(state);
     state.window.set_title(Some(&crate::i18n::t("app_title")));
     state.brand_label.set_text(&crate::i18n::t("app_name"));
-    apply_brand_icon(&state.brand_icon, &state.repo_root);
+    apply_brand_icon(&state.brand_icon);
 
     // Relocalize chat list previews (cached English → Thai/English).
     for chat in state.chats.borrow_mut().iter_mut() {
@@ -1478,6 +1481,7 @@ fn wire_actions(state: &AppState) {
     state.sticker_btn.connect_clicked(move |_| {
         open_sticker_picker(&s);
     });
+    expressions::wire_composer_preview(state);
     // Drop decoded sticker thumbs when the picker closes.
     {
         let pop = state.sticker_popover.clone();
@@ -1651,6 +1655,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
 }
 
 fn restart_qr_login(state: &AppState) {
+    expressions::close(state);
     *state.restarting.borrow_mut() = true;
     state.pending.borrow_mut().clear();
     login::show_qr_stage(&state.login);

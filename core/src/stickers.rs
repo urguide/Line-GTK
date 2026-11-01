@@ -161,7 +161,7 @@ pub fn load(
     }
     // Separate flags avoid borrowing partial while resolve_image is alive.
     let mut failed_package = false;
-    for product in valid_products.iter().take(12) {
+    for product in &valid_products {
         let package = string(&product["id"]);
         let old = old_packs.iter().find(|p| p["id"] == package);
         let detail = fetch_metadata(&package).and_then(|bytes| metadata(&bytes));
@@ -211,7 +211,7 @@ pub fn load(
         };
         let mut stickers = Vec::new();
         let mut seen = HashSet::new();
-        for id in entries.into_iter().take(48) {
+        for id in entries {
             if !numeric(&id) {
                 failed_package = true;
                 continue;

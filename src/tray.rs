@@ -105,7 +105,9 @@ impl ksni::Tray for LineTray {
     }
 
     fn icon_name(&self) -> String {
-        "line-rust".into()
+        // A named system icon takes precedence over IconPixmap on some hosts.
+        // Always use the bundled artwork, even when an older icon is installed.
+        String::new()
     }
 
     fn category(&self) -> ksni::Category {

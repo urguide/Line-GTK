@@ -81,6 +81,7 @@ pub fn normalize(raw: &Value, account: &str) -> Value {
         "imagePath":null,"audioPath":null,"filePath":null,
         "imageUrl":meta["PREVIEW_URL"].as_str().or_else(||meta["DOWNLOAD_URL"].as_str()),
         "stickerId":meta["STKID"],"stickerPackageId":meta["STKPKGID"],"stickerVersion":meta["STKVER"],
+        "emojis":crate::expressions::resources(meta),
         "durationMs":integer(&meta["DURATION"]),
         "relatedMessageId":if relation{raw["relatedMessageId"].as_str()}else{None},
         "flex":if content_type=="FLEX"{flex(meta)}else{Value::Null},

@@ -128,6 +128,8 @@ pub(super) struct AppState {
     pub attach_btn: gtk::Button,
     pub sticker_btn: gtk::Button,
     pub sticker_popover: gtk::Popover,
+    pub expression_ui: Rc<RefCell<Option<Rc<super::expressions::LibraryUi>>>>,
+    pub emoji_catalog: Rc<RefCell<serde_json::Value>>,
     pub call_btn: gtk::Button,
     pub mute_btn: gtk::Button,
     pub notes_btn: gtk::Button,
@@ -193,7 +195,20 @@ pub(super) enum Pending {
         placeholder_id: String,
         draft: Option<Box<TextDraft>>,
     },
-    ListStickers,
+    ListStickers {
+        kind: String,
+    },
+    ExpressionLibrary {
+        ui: std::rc::Weak<super::expressions::LibraryUi>,
+    },
+    ExpressionDownload {
+        ui: std::rc::Weak<super::expressions::LibraryUi>,
+        package: String,
+    },
+    EmojiImages {
+        view: glib::WeakRef<gtk::TextView>,
+        text: String,
+    },
     Unsend {
         chat_mid: String,
         message_id: String,

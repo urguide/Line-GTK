@@ -105,6 +105,8 @@ pub struct MessageInfo {
     pub duration_ms: Option<i64>,
     #[serde(default)]
     pub flex: Option<FlexInfo>,
+    #[serde(default)]
+    pub emojis: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,7 +132,7 @@ pub enum ProtocolEvent {
         pin: String,
     },
     Listening,
-    Message(MessageInfo),
+    Message(Box<MessageInfo>),
     MessageUnsent {
         chat_mid: String,
         message_id: String,

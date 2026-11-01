@@ -1,6 +1,10 @@
 use super::*;
 
 pub(super) fn open_sticker_picker(state: &AppState) {
+    open_expression_picker(state, "sticker");
+}
+
+pub(super) fn open_expression_picker(state: &AppState, kind: &str) {
     if state.current_chat.borrow().is_none() {
         toast(state, &crate::i18n::t("select_chat_first"));
         return;
@@ -31,9 +35,15 @@ pub(super) fn open_sticker_picker(state: &AppState) {
     state.sticker_popover.set_child(Some(&loading));
     state.sticker_popover.popup();
 
-    match state.sidecar.list_stickers() {
+    match state
+        .sidecar
+        .request("expression_library", Some(serde_json::json!({"kind":kind})))
+    {
         Ok(id) => {
-            state.pending.borrow_mut().insert(id, Pending::ListStickers);
+            state
+                .pending
+                .borrow_mut()
+                .insert(id, Pending::ListStickers { kind: kind.into() });
         }
         Err(e) => {
             state.sticker_popover.popdown();
@@ -45,31 +55,73 @@ pub(super) fn open_sticker_picker(state: &AppState) {
     }
 }
 
-pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value) {
+pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value, kind: &str) {
+    if kind == "emoji" {
+        *state.emoji_catalog.borrow_mut() = result.clone();
+    }
     let packs = result
         .get("packs")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
 
+    let root = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(0)
+        .css_classes(["line-sticker-chooser"])
+        .build();
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    for (value, key) in [("sticker", "stickers"), ("emoji", "emojis")] {
+        let button = gtk::ToggleButton::with_label(&crate::i18n::t(key));
+        button.set_active(value == kind);
+        let s = state.clone();
+        button.connect_clicked(move |button| {
+            if button.is_active() {
+                open_expression_picker(&s, value);
+            }
+        });
+        header.append(&button);
+    }
+    let manage = gtk::Button::builder()
+        .icon_name("folder-download-symbolic")
+        .tooltip_text(crate::i18n::t("expressions_manage"))
+        .hexpand(true)
+        .halign(gtk::Align::End)
+        .build();
+    let s = state.clone();
+    let selected_kind = kind.to_owned();
+    manage.connect_clicked(move |_| {
+        s.sticker_popover.popdown();
+        super::expressions::open_library(&s, &selected_kind);
+    });
+    header.append(&manage);
+    root.append(&header);
+    if let Some(error) = result["error"].as_str() {
+        root.append(
+            &gtk::Label::builder()
+                .label(error)
+                .wrap(true)
+                .max_width_chars(40)
+                .build(),
+        );
+    }
+    if result["stale"] == true {
+        root.append(&gtk::Label::new(Some(&crate::i18n::t("expressions_stale"))));
+    }
     if packs.is_empty() {
         let empty = gtk::Label::builder()
-            .label(crate::i18n::t("stickers_empty"))
+            .label(crate::i18n::t("expressions_empty"))
+            .wrap(true)
             .css_classes(["dim-label"])
             .margin_top(24)
             .margin_bottom(24)
             .margin_start(20)
             .margin_end(20)
             .build();
-        state.sticker_popover.set_child(Some(&empty));
+        root.append(&empty);
+        state.sticker_popover.set_child(Some(&root));
         return;
     }
-
-    let root = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(0)
-        .css_classes(["line-sticker-chooser"])
-        .build();
 
     let title = gtk::Label::builder()
         .xalign(0.0)
@@ -201,8 +253,21 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value)
             let s = state.clone();
             let pop = state.sticker_popover.clone();
             let image_path = path.clone();
+            let emoji = kind == "emoji";
             btn.connect_clicked(move |_| {
                 pop.popdown();
+                if emoji {
+                    if let Some((start, end)) = s.composer.selection_bounds() {
+                        s.composer.delete_text(start, end);
+                        s.composer.set_position(start);
+                    }
+                    let mut position = s.composer.position();
+                    s.composer
+                        .insert_text(&format!("[emoji:{package_id}:{sticker_id}]"), &mut position);
+                    s.composer.set_position(position);
+                    s.composer.grab_focus();
+                    return;
+                }
                 send_sticker_now(
                     &s,
                     &sticker_id,
@@ -322,6 +387,7 @@ pub(super) fn send_sticker_now(
                     file_path: None,
                     duration_ms: None,
                     flex: None,
+                    emojis: Vec::new(),
                 },
             );
             dismiss_new_marker(state);
@@ -681,6 +747,7 @@ pub(super) fn send_local_media_path(state: &AppState, path: PathBuf) {
                     file_path,
                     duration_ms: duration_ms.map(|v| v as i64),
                     flex: None,
+                    emojis: Vec::new(),
                 },
             );
             show_upload_progress(state, 0.02, &crate::i18n::t("media_uploading"));
@@ -896,6 +963,7 @@ pub(super) fn finish_voice_record(state: &AppState, send: bool) {
                     file_path: Some(path_str),
                     duration_ms: Some(duration_ms as i64),
                     flex: None,
+                    emojis: Vec::new(),
                 },
             );
             show_upload_progress(state, 0.02, &crate::i18n::t("media_uploading"));

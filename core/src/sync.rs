@@ -1,5 +1,5 @@
 use crate::store::{Cursor, Gap, Page, Store, id};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
 use std::sync::{
@@ -368,6 +368,121 @@ impl<T: Transport> Engine<T> {
                         return Ok(value);
                     }
                     params["account"] = json!(self.account);
+                    if matches!(
+                        method.as_str(),
+                        "expression_library" | "download_expression"
+                    ) {
+                        let kind = if params["kind"] == "emoji" {
+                            "emoji"
+                        } else {
+                            "sticker"
+                        };
+                        let owned_key = format!("expression_owned_{kind}");
+                        let installed_key = format!("expression_installed_{kind}");
+                        let cached = if params["force"] == true {
+                            None
+                        } else {
+                            self.store.catalog(&owned_key, self.policy.owned_stickers)?
+                        };
+                        let (owned, stale) = if let Some(value) = cached {
+                            (value, false)
+                        } else {
+                            let fetched = crate::expressions::owned(|offset| {
+                                self.valid(generation)?;
+                                self.pace(self.last_request, self.page_pause, generation)?;
+                                let result = self.transport.call(
+                                    "bridge_owned_expressions",
+                                    json!({"kind":kind,"offset":offset}),
+                                    generation,
+                                );
+                                self.last_request = Some(Instant::now());
+                                result
+                            });
+                            self.valid(generation)?;
+                            match fetched {
+                                Ok(value) => {
+                                    self.store.save_catalog(&owned_key, &value)?;
+                                    (value, false)
+                                }
+                                Err(error) => match self
+                                    .store
+                                    .stale_catalog(&owned_key, self.policy.disk_chats)?
+                                {
+                                    Some(value) if method == "expression_library" => (value, true),
+                                    _ => return Err(error),
+                                },
+                            }
+                        };
+                        let mut installed = self
+                            .store
+                            .catalog(&installed_key, i64::MAX)?
+                            .or(if kind == "sticker" {
+                                self.store.stale_catalog("list_stickers", i64::MAX)?
+                            } else {
+                                None
+                            })
+                            .unwrap_or(json!({"packs":[]}));
+                        if kind == "sticker" {
+                            installed["packs"]
+                                .as_array_mut()
+                                .context("invalid installed library")?
+                                .retain(|p| p["id"] != "__recent__");
+                        }
+                        if method == "download_expression" {
+                            let product = owned["products"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .find(|p| p["id"] == params["packageId"])
+                                .context("product not owned")?;
+                            params["product"] = product.clone();
+                            let pack =
+                                self.transport
+                                    .application(&method, params.clone(), generation)?;
+                            self.valid(generation)?;
+                            let packs = installed["packs"]
+                                .as_array_mut()
+                                .context("invalid installed library")?;
+                            packs.retain(|p| p["id"] != pack["id"]);
+                            packs.push(pack.clone());
+                            self.store.save_catalog(&installed_key, &installed)?;
+                            return Ok(pack);
+                        }
+                        let ids: std::collections::HashSet<_> = owned["products"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|p| p["id"].as_str())
+                            .collect();
+                        installed["packs"]
+                            .as_array_mut()
+                            .context("invalid installed library")?
+                            .retain(|p| p["id"].as_str().is_some_and(|id| ids.contains(id)));
+                        self.store.save_catalog(&installed_key, &installed)?;
+                        params["installed"] = installed;
+                        params["products"] = owned["products"].clone();
+                        if kind == "sticker" {
+                            params["recent"] = self
+                                .store
+                                .catalog("recent_stickers", i64::MAX)?
+                                .unwrap_or(json!([]));
+                        }
+                        let mut result = self.transport.application(&method, params, generation)?;
+                        result["stale"] = json!(stale);
+                        return Ok(result);
+                    }
+                    if method == "send_message" {
+                        let installed = self
+                            .store
+                            .catalog("expression_installed_emoji", i64::MAX)?
+                            .unwrap_or_default();
+                        let (text, metadata) = crate::expressions::compose(
+                            params["text"].as_str().unwrap_or_default(),
+                            &installed,
+                        );
+                        params["text"] = json!(text);
+                        params["contentMetadata"] = metadata;
+                    }
                     if matches!(method.as_str(), "list_chats" | "list_friends") {
                         params["previous"] = json!({
                             "chats":self.store.stale_catalog("list_chats",self.policy.disk_chats)?.unwrap_or_default()["chats"],

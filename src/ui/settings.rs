@@ -1008,7 +1008,7 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
         row.connect_activated(|_| {
             let _ = gio::AppInfo::launch_default_for_uri(
-                "https://github.com/MidnightTale",
+                "https://github.com/urguide",
                 None::<&gio::AppLaunchContext>,
             );
         });

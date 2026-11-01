@@ -14,6 +14,102 @@ fn numeric(s: &str) -> Result<&str> {
 }
 
 impl Ipc {
+    fn expression_library(&self, p: &Value) -> Result<Value> {
+        let mut packs = p["installed"]["packs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        // Recheck files on every open; clearing the cache must never leave broken buttons.
+        for pack in &mut packs {
+            let complete = pack["stickers"].as_array().is_some_and(|items| {
+                !items.is_empty()
+                    && items.iter().all(|s| {
+                        s["imagePath"]
+                            .as_str()
+                            .is_some_and(|path| Path::new(path).is_file())
+                    })
+            });
+            pack["downloaded"] = json!(complete);
+        }
+        let mut products = p["products"].as_array().cloned().unwrap_or_default();
+        for product in &mut products {
+            product["downloaded"] = json!(
+                packs
+                    .iter()
+                    .any(|p| p["id"] == product["id"] && p["downloaded"] == true)
+            );
+        }
+        packs.retain(|p| p["downloaded"] == true);
+        let mut recents = Vec::new();
+        for recent in p["recent"].as_array().into_iter().flatten() {
+            if let Some(item) = packs
+                .iter()
+                .find(|p| p["id"] == recent["packageId"])
+                .and_then(|p| p["stickers"].as_array())
+                .and_then(|items| items.iter().find(|s| s["stickerId"] == recent["stickerId"]))
+            {
+                recents.push(item.clone());
+                if recents.len() == 24 {
+                    break;
+                }
+            }
+        }
+        if !recents.is_empty() {
+            packs.insert(
+                0,
+                json!({"id":"__recent__","recent":true,"name":"Recent","stickers":recents}),
+            );
+        }
+        Ok(json!({"packs":packs,"products":products,"kind":p["kind"]}))
+    }
+
+    fn download_expression(&self, p: &Value, generation: u64) -> Result<Value> {
+        use line_rust_core::expressions;
+        let product = &p["product"];
+        let package = string(&product["id"]);
+        if !expressions::valid_id(&package) {
+            bail!("invalid package ID");
+        }
+        if p["kind"] == "emoji" {
+            let root = self.data.join("cache/stickers/emoji").join(&package);
+            let meta_path = root.join("meta.json");
+            if meta_path.is_file()
+                && std::fs::read(&meta_path)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                    .and_then(|v| expressions::emoji_pack(&v, product).ok())
+                    .is_none()
+            {
+                std::fs::remove_file(&meta_path)?;
+            }
+            self.asset(&format!("https://stickershop.line-scdn.net/sticonshop/v1/{package}/sticon/iphone/meta.json"), &meta_path, generation)?;
+            let meta = serde_json::from_slice(&std::fs::read(&meta_path)?)?;
+            let mut pack = expressions::emoji_pack(&meta, product)?;
+            for item in pack["stickers"].as_array_mut().unwrap() {
+                let id = string(&item["stickerId"]);
+                let path = self.asset(&format!("https://stickershop.line-scdn.net/sticonshop/v1/sticon/{package}/android/{id}.png"), &root.join(format!("{id}.png")), generation)?;
+                item["imagePath"] = json!(path);
+            }
+            pack["iconPath"] = pack["stickers"][0]["imagePath"].clone();
+            pack["downloaded"] = json!(true);
+            return Ok(pack);
+        }
+        let result = self.sticker_catalog(
+            &json!({"owned":[product],"previous":{},"recent":[]}),
+            generation,
+        )?;
+        if result["partial"] == true {
+            bail!("package download incomplete; retry to resume");
+        }
+        let mut pack = result["packs"]
+            .as_array()
+            .and_then(|packs| packs.first())
+            .cloned()
+            .context("empty sticker package")?;
+        pack["downloaded"] = json!(true);
+        Ok(pack)
+    }
+
     fn asset(&self, url: &str, dest: &Path, generation: u64) -> Result<PathBuf> {
         self.active(generation)?;
         if dest.is_file() {
@@ -478,6 +574,32 @@ impl Ipc {
     ) -> Result<Value> {
         self.active(generation)?;
         match method {
+            "expression_library" => self.expression_library(&p),
+            "download_expression" => self.download_expression(&p, generation),
+            "expression_images" => {
+                let mut images = Vec::new();
+                for resource in p["resources"].as_array().into_iter().flatten().take(100) {
+                    let package = string(&resource["productId"]);
+                    let id = string(&resource["sticonId"]);
+                    if !line_rust_core::expressions::valid_id(&package)
+                        || !line_rust_core::expressions::valid_id(&id)
+                    {
+                        continue;
+                    }
+                    let path = self
+                        .data
+                        .join("cache/stickers/emoji")
+                        .join(&package)
+                        .join(format!("{id}.png"));
+                    if let Ok(path) = self.asset(&format!("https://stickershop.line-scdn.net/sticonshop/v1/sticon/{package}/android/{id}.png"), &path, generation) {
+                        let mut resource = resource.clone();
+                        resource["imagePath"] = json!(path);
+                        images.push(resource);
+                    }
+                    self.active(generation)?;
+                }
+                Ok(json!({"resources":images}))
+            }
             "notes" => self.notes_operation(p, generation),
             "profile_avatar" => {
                 let mid = p["mid"].as_str().context("profile ID missing")?;

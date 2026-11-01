@@ -1148,6 +1148,10 @@ pub fn load_css() {
         .line-sticker-popover {
             padding: 0;
         }
+        .line-inline-emoji, .line-inline-emoji text {
+            background: transparent;
+            color: inherit;
+        }
         .line-sticker-chooser {
             min-width: 280px;
             min-height: 320px;

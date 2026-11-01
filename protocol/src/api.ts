@@ -141,24 +141,30 @@ export function createApi(
         }));
       case "bridge_groups":
         return (await c.fetchJoinedChats()).map((chat) => chat.raw);
-      case "bridge_owned_stickers": {
+      case "bridge_owned_stickers":
+      case "bridge_owned_expressions": {
         const { ShopService } = await import(
           "https://jsr.io/@evex/linejs/3.5.0/base/service/shop/mod.ts"
         );
         const shop = new ShopService(c.base);
         return await shop.getOwnedProductSummaries(
           {
-            shopId: "stickershop",
-            offset: 0,
+            shopId: p.kind === "emoji" ? "sticonshop" : "stickershop",
+            offset: Number(p.offset ?? 0),
             limit: 80,
             locale: { language: "en", country: "TH" },
           } as never,
         );
       }
       case "bridge_send_text": {
+        const contentMetadata = (p.contentMetadata ?? {}) as Record<
+          string,
+          string
+        >;
         const raw = await c.base.talk.sendMessage({
           to: String(p.chatMid),
           text: String(p.text),
+          contentMetadata,
           relatedMessageId: p.relatedMessageId as string | undefined,
           e2ee: p.e2ee !== false,
         });
@@ -166,6 +172,7 @@ export function createApi(
           rawMessage: packRaw({
             ...raw,
             text: String(p.text),
+            contentMetadata: { ...raw.contentMetadata, ...contentMetadata },
             relatedMessageId: p.relatedMessageId,
             messageRelationType: p.relatedMessageId
               ? "REPLY"

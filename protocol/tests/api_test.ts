@@ -5,6 +5,46 @@ import { packRaw, unpackRaw, wireLine } from "../src/raw_codec.ts";
 import { coerceI64 } from "../src/messages.ts";
 import { unsendFromOperation } from "../src/events.ts";
 
+Deno.test("inline emoji metadata accompanies encrypted text and the saved outgoing message", async () => {
+  const metadata = {
+    REPLACE: JSON.stringify({
+      sticon: {
+        resources: [{
+          S: 3,
+          E: 6,
+          productId: "abc",
+          sticonId: "001",
+          version: 2,
+          resourceType: "STATIC",
+        }],
+      },
+    }),
+    STICON_OWNERSHIP: '["abc"]',
+  };
+  const client = {
+    base: {
+      talk: {
+        sendMessage: (p: Record<string, unknown>) => {
+          assertEquals(p.text, "好😀(笑)");
+          assertEquals(p.contentMetadata, metadata);
+          assertEquals(p.e2ee, true);
+          return Promise.resolve({ id: "123" });
+        },
+      },
+    },
+  } as unknown as Client;
+  const result = await createApi(() => client, "/unused")("bridge_send_text", {
+    chatMid: "u1",
+    text: "好😀(笑)",
+    contentMetadata: metadata,
+  });
+  assertEquals(
+    (result as { rawMessage: { contentMetadata: unknown } }).rawMessage
+      .contentMetadata,
+    metadata,
+  );
+});
+
 Deno.test("memory media transfers bytes without creating disk transfers", async () => {
   const bytes = new Uint8Array(300000).fill(17);
   const api = createApi(

@@ -75,6 +75,19 @@ Ownership rejection removes the matching recent sticker and deletes ownership
 snapshots atomically for that account, preventing stale catalog fallback from
 restoring rejected ownership. Failed sends never persist a successful message.
 
+The sticker chooser now has separate **Stickers** and **Emoji** tabs. Its download
+button opens the account's full purchased/owned library (paginated, without the
+old 12-pack/48-image limits). Select packs or use **Download all**; completed packs
+are skipped, failed packs remain retryable, and **Stop queue** finishes the current
+pack before stopping. Opening the chooser downloads no entire packs. Existing
+downloaded sticker packs are retained. Purchase refresh and local download state
+are separate; missing cache files make the pack available for download again.
+Emoji insert editable `[emoji:package:id]` tokens at the cursor with a live visual
+preview above the composer. Sending resolves these to LINE `REPLACE` and
+`STICON_OWNERSHIP` metadata using UTF-16 offsets; received emoji render inline with
+text. Emoji currently use their static PNG assets. Downloads are stored in the
+application's sticker cache, including emoji under `cache/stickers/emoji/`.
+
 All retention modes share `core/src/cache_policy.rs`; changes in Settings are
 sent immediately to the Rust worker and rechecked on subsequent requests.
 

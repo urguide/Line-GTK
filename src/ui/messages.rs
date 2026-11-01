@@ -341,7 +341,10 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             && msg.text != "[Sticker]"
             && !is_sticker;
 
-        if show_text {
+        if show_text && !msg.emojis.is_empty() {
+            super::expressions::append_inline(state, &bubble, msg);
+            append_link_chips(state, &bubble, &msg.text);
+        } else if show_text {
             let label = gtk::Label::builder()
                 .label(&msg.text)
                 .xalign(0.0)
@@ -1325,6 +1328,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
         file_path: Some(path.to_string()),
         duration_ms,
         flex: None,
+        emojis: Vec::new(),
     };
     append_voice_card(state, &bubble, &msg, true);
 }

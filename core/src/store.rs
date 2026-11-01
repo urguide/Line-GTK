@@ -310,7 +310,7 @@ impl Store {
             params![self.account, now, serde_json::to_string(&recent)?],
         )?;
         tx.execute(
-            "DELETE FROM catalogs WHERE account=?1 AND kind IN ('owned_stickers','list_stickers')",
+            "DELETE FROM catalogs WHERE account=?1 AND kind IN ('owned_stickers','list_stickers','expression_owned_sticker')",
             params![self.account],
         )?;
         tx.commit()?;

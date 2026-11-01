@@ -286,6 +286,9 @@ impl Sidecar {
                 | "list_friends"
                 | "profile_avatar"
                 | "list_stickers"
+                | "expression_library"
+                | "download_expression"
+                | "expression_images"
                 | "mark_read"
                 | "unsend_message"
                 | "mute_chat"
@@ -448,10 +451,6 @@ impl Sidecar {
             params["version"] = json!(v);
         }
         self.request("send_sticker", Some(params))
-    }
-
-    pub fn list_stickers(&self) -> Result<u64> {
-        self.request("list_stickers", None)
     }
 
     pub fn mark_read(&self, chat_mid: &str, last_message_id: &str) -> Result<u64> {
@@ -710,7 +709,7 @@ fn read_loop_inner<R: std::io::Read>(
                         "message" => {
                             if let Some(msg) = resp.extra.get("message") {
                                 match serde_json::from_value(msg.clone()) {
-                                    Ok(m) => ProtocolEvent::Message(m),
+                                    Ok(m) => ProtocolEvent::Message(Box::new(m)),
                                     Err(e) => ProtocolEvent::Error(e.to_string()),
                                 }
                             } else {
