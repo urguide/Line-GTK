@@ -704,6 +704,10 @@ impl Ipc {
                 Ok(json!({}))
             }
             "list_chats" | "list_friends" => self.catalogs(method, &p["previous"], generation),
+            "list_chat_members" => line_rust_core::mentions::members(
+                p["chatMid"].as_str().context("missing chat ID")?,
+                |method, args| self.call(method, args, generation),
+            ),
             "list_stickers" => self.sticker_catalog(&p, generation),
             "send_media" | "send_audio" => {
                 if method == "send_audio" {

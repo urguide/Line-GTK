@@ -25,6 +25,9 @@ pub fn from_envelope(envelope: &Value, account: &str) -> Value {
         return envelope.clone(); // legacy normalized cache/event
     }
     let mut message = normalize(decoded.or(raw).unwrap_or(&Value::Null), account);
+    if let Some(count) = raw.and_then(|r| r["readCount"].as_u64()) {
+        message["readCount"] = json!(count);
+    }
     let failed = decoded.is_none() || envelope["decodeError"].is_string();
     message["decodeError"] = if failed {
         json!("message_decode_failed")
@@ -76,6 +79,7 @@ pub fn normalize(raw: &Value, account: &str) -> Value {
     json!({
         "id": string(&raw["id"]), "text":text, "from":raw["from"].as_str().unwrap_or_default(),
         "to":raw["to"].as_str().unwrap_or_default(),"mine":raw["from"]==account,
+        "readCount":raw["readCount"].as_u64(),
         "createdTime":integer(&raw["createdTime"]),"deliveredTime":string(&raw["deliveredTime"]),
         "contentType":content_type,"fileName":meta["FILE_NAME"].as_str().or_else(||meta["FILENAME"].as_str()),
         "imagePath":null,"audioPath":null,"filePath":null,

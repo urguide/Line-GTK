@@ -34,6 +34,7 @@ pub(super) struct ReplyTarget {
 #[derive(Debug, Clone)]
 pub(super) struct TextDraft {
     pub text: String,
+    pub mentions: Vec<line_rust_core::mentions::Mention>,
     pub reply: Option<ReplyTarget>,
 }
 
@@ -48,6 +49,7 @@ pub(super) struct AppState {
     pub message_list: virtual_list::VirtualMessageList,
     pub message_scroll: gtk::ScrolledWindow,
     pub composer: gtk::Entry,
+    pub mention_ui: Rc<super::mentions::MentionUi>,
     pub composer_row: gtk::Box,
     pub reply_bar: gtk::Box,
     pub reply_label: gtk::Label,
@@ -92,7 +94,7 @@ pub(super) struct AppState {
     pub history_loading: Rc<RefCell<bool>>,
     pub history_has_more: Rc<RefCell<bool>>,
     pub last_incoming_id: Rc<RefCell<Option<String>>>,
-    pub read_upto: Rc<RefCell<HashMap<String, String>>>,
+    pub read_counts: Rc<RefCell<HashMap<String, HashMap<String, u64>>>>,
     pub restored_last_chat: Rc<RefCell<bool>>,
     pub media_queue: Rc<RefCell<VecDeque<(String, String)>>>,
     pub media_pumping: Rc<RefCell<bool>>,
@@ -180,6 +182,9 @@ pub(super) struct PendingNotif {
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    ChatMembers {
+        generation: u64,
+    },
     Notes {
         ui: std::rc::Weak<super::notes::NotesUi>,
         action: String,

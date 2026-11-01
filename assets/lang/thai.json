@@ -1,4 +1,9 @@
 {
+  "mention_loading": "กำลังโหลดสมาชิกในแชท…",
+  "mention_failed": "โหลดสมาชิกในแชทไม่สำเร็จ",
+  "mention_retry": "ลองอีกครั้ง",
+  "mention_empty": "ไม่พบสมาชิกที่ตรงกัน",
+  "mention_hint": "กล่าวถึงสมาชิก · ↑↓ เลือก · Enter / Tab ยืนยัน · Esc ปิด",
   "app_title": "line-rust",
   "app_name": "line-rust",
   "emojis": "อิโมจิ",
@@ -231,6 +236,7 @@
   "chat_prefix": "แชท · {name}",
   "status_sent": "ส่งแล้ว",
   "status_read": "อ่านแล้ว",
+  "status_read_count": "อ่านแล้ว {n}",
   "search": "ค้นหา",
   "voice_message": "ข้อความเสียง",
   "play_voice": "เล่น",

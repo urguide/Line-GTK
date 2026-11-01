@@ -53,6 +53,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             on_logged_in(state, &result);
         }
         ProtocolEvent::SessionFailed { error } => {
+            mentions::reset(state);
             notes::close(state);
             super::expressions::close(state);
             *state.session_ready.borrow_mut() = false;
@@ -229,11 +230,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
             upsert_chat_row(state, chat);
         }
-        ProtocolEvent::ReadReceipt {
+        ProtocolEvent::ReadCounts {
+            account,
             chat_mid,
-            message_id,
+            counts,
         } => {
-            apply_peer_read(state, &chat_mid, &message_id);
+            if state.self_mid.borrow().as_deref() == Some(account.as_str()) {
+                apply_read_counts(state, &chat_mid, counts);
+            }
         }
         ProtocolEvent::Chats { chats, cached } => {
             apply_chats(state, chats, cached);
@@ -522,6 +526,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::ChatMembers { generation }) = pending.as_ref() {
+                mentions::response(state, *generation, ok, &result);
+                return;
+            }
             if let Some(Pending::Notes { ui, action, append }) = pending.as_ref() {
                 if let Some(ui) = ui.upgrade() {
                     notes::response(state, &ui, action, *append, ok, &result, error.as_deref());
@@ -593,6 +601,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         && let Some(draft) = draft
                     {
                         state.composer.set_text(&draft.text);
+                        *state.mention_ui.selected.borrow_mut() = draft.mentions.clone();
                         *state.reply_target.borrow_mut() = draft.reply.clone().filter(|target| {
                             !state.unsent_msg_ids.borrow().contains(&target.message.id)
                         });
@@ -638,6 +647,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 return;
             }
             match pending {
+                Some(Pending::ChatMembers { .. }) => unreachable!("member responses handled above"),
                 Some(Pending::Notes { .. }) => unreachable!("notes responses handled above"),
                 Some(Pending::AddFriend) => {
                     toast(state, &crate::i18n::t("friend_ok"));
@@ -836,7 +846,14 @@ pub(super) fn recover_sidecar(state: &AppState) {
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
+            if state.self_mid.borrow().as_deref() != Some(profile.mid.as_str()) {
+                mentions::reset(state);
+                state.read_counts.borrow_mut().clear();
+            }
             *state.session_ready.borrow_mut() = true;
+            if let Some(chat) = state.current_chat.borrow().as_deref() {
+                let _ = state.sidecar.sync_receipts(chat);
+            }
             // A session announcement is not proof of a stable process. Reset
             // the crash budget only if this exact process stays alive a minute.
             let stable_pid = state.sidecar.status().pid;
@@ -928,6 +945,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    mentions::reset(state);
     notes::close(state);
     super::expressions::close(state);
     state.stack.set_visible_child_name("login");

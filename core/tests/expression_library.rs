@@ -39,7 +39,19 @@ impl Transport for Fake {
                 )
             }
             "send_message" => {
-                assert_eq!(p["text"], "好😀(笑)");
+                if p["mentions"].is_array() {
+                    assert_eq!(p["text"], "好😀(笑) @Johnny");
+                    assert_eq!(p["relatedMessageId"], "122");
+                    let mentions: Value =
+                        serde_json::from_str(p["contentMetadata"]["MENTION"].as_str().unwrap())
+                            .unwrap();
+                    assert_eq!(
+                        mentions,
+                        json!({"MENTIONEES":[{"S":"7","E":"14","M":"u1"}]})
+                    );
+                } else {
+                    assert_eq!(p["text"], "好😀(笑)");
+                }
                 let r = line_rust_core::expressions::resources(&p["contentMetadata"]);
                 assert_eq!(r[0]["S"], 3);
                 Ok(
@@ -137,6 +149,15 @@ fn library_is_account_scoped_persists_downloads_and_only_commits_success() {
     );
     assert_eq!(sent["ok"], true);
     assert_eq!(sent["result"]["message"]["emojis"][0]["sticonId"], "001");
+    let mentioned = request(
+        9,
+        "send_message",
+        json!({
+            "chatMid":"c1", "text":"好😀[emoji:abc:001] @Johnny", "relatedMessageId":"122",
+            "mentions":[{"start":18,"end":25,"mid":"u1","label":"@Johnny"}]
+        }),
+    );
+    assert_eq!(mentioned["ok"], true);
     session("other");
     assert_eq!(
         request(7, "expression_library", json!({"kind":"emoji"}))["result"]["packs"],

@@ -200,6 +200,33 @@ impl Sidecar {
         self.start_process()
     }
 
+    pub fn sync_receipts(&self, chat: &str) -> Result<()> {
+        self.core
+            .commands
+            .send(line_rust_core::sync::Command::SyncReceipts {
+                chat: chat.into(),
+                generation: self.generation.load(Ordering::SeqCst),
+            })?;
+        Ok(())
+    }
+
+    pub fn flush_receipts(&self) -> Result<()> {
+        let (done, rx) = std::sync::mpsc::sync_channel(1);
+        self.core
+            .commands
+            .send(line_rust_core::sync::Command::FlushReceipts { done })?;
+        rx.recv_timeout(Duration::from_secs(10))??;
+        Ok(())
+    }
+
+    pub fn shutdown(&self) {
+        self.stop_process();
+        if let Err(error) = self.flush_receipts() {
+            tracing::warn!(%error, "read receipt flush failed");
+        }
+        let _ = self.core.commands.send(line_rust_core::sync::Command::Stop);
+    }
+
     pub fn status(&self) -> SidecarStatus {
         let (running, pid) = self
             .child
@@ -283,6 +310,7 @@ impl Sidecar {
                 | "send_sticker"
                 | "send_postback"
                 | "list_chats"
+                | "list_chat_members"
                 | "list_friends"
                 | "profile_avatar"
                 | "list_stickers"
@@ -395,7 +423,18 @@ impl Sidecar {
         text: &str,
         related_message_id: Option<&str>,
     ) -> Result<u64> {
+        self.send_message_with_mentions(chat_mid, text, related_message_id, &[])
+    }
+
+    pub fn send_message_with_mentions(
+        &self,
+        chat_mid: &str,
+        text: &str,
+        related_message_id: Option<&str>,
+        mentions: &[line_rust_core::mentions::Mention],
+    ) -> Result<u64> {
         let mut params = json!({ "chatMid": chat_mid, "text": text });
+        params["mentions"] = json!(mentions);
         if let Some(id) = related_message_id {
             params["relatedMessageId"] = json!(id);
         }
@@ -909,19 +948,16 @@ fn read_loop_inner<R: std::io::Read>(
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false),
                         },
-                        "read_receipt" => ProtocolEvent::ReadReceipt {
+                        "read_counts" => ProtocolEvent::ReadCounts {
+                            account: resp.extra["account"].as_str().unwrap_or_default().into(),
                             chat_mid: resp
                                 .extra
                                 .get("chatMid")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default()
                                 .to_string(),
-                            message_id: resp
-                                .extra
-                                .get("messageId")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default()
-                                .to_string(),
+                            counts: serde_json::from_value(resp.extra["counts"].clone())
+                                .unwrap_or_default(),
                         },
                         "call_incoming" => ProtocolEvent::CallIncoming {
                             call_id: resp

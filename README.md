@@ -140,6 +140,14 @@ Read receipts are best-effort Rust operations: missing IDs, no linked session,
 or a rejected API call return `marked: false` inside a successful response
 envelope, without a UI error toast. Only an acknowledged receipt clears that
 chat's SQLite unread count, preserving other chats, accounts and cache expiry.
+Outgoing direct messages retain their read checkmarks; group and multi-person
+rooms show the number of readers. History requests include LINE's `readCount`,
+and reader ranges are reconciled on opening a chat and every 30 seconds for the
+selected chat, independently of message-page freshness. Live reader operations
+are deduplicated and update the UI immediately. Rust batches dirty receipt state
+across chats into one SQLite transaction every 10 seconds, also flushing before
+account changes and normal shutdown. Count snapshots are never added to observed
+reader counts; unavailable range APIs fall back to latest-page count snapshots.
 Friend IDs are normalized in Rust (trim whitespace and remove the leading `@`).
 A successful lookup is retained in the account's chat/friend catalogs even when
 the friend-request API rejects an existing friend or is unavailable; the result

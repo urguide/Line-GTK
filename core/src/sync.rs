@@ -1,7 +1,7 @@
 use crate::store::{Cursor, Gap, Page, Store, id};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 mod expressions;
+mod receipts;
 
 /// Implemented by the host's IPC transport; no GTK or JavaScript scheduling here.
 pub trait Transport: Send + 'static {
@@ -30,6 +31,19 @@ pub trait Transport: Send + 'static {
 }
 
 pub enum Command {
+    PeerRead {
+        chat: String,
+        reader: String,
+        message: String,
+        generation: u64,
+    },
+    SyncReceipts {
+        chat: String,
+        generation: u64,
+    },
+    FlushReceipts {
+        done: mpsc::SyncSender<Result<()>>,
+    },
     Operation {
         id: u64,
         method: String,
@@ -80,6 +94,10 @@ pub enum Command {
 }
 
 enum Work {
+    Receipts {
+        chat: String,
+        generation: u64,
+    },
     Expression {
         generation: u64,
     },
@@ -117,6 +135,11 @@ pub struct Engine<T: Transport> {
     media_pause: Duration,
     expression_jobs: Vec<crate::expression_jobs::DownloadJob>,
     expression_scheduled: bool,
+    receipts: HashMap<(String, String), crate::receipts::Receipts>,
+    dirty_receipts: HashSet<(String, String)>,
+    receipts_flush_at: Instant,
+    receipts_synced: HashMap<String, Instant>,
+    queued_receipts: HashSet<String>,
 }
 
 impl<T: Transport> Engine<T> {
@@ -143,6 +166,11 @@ impl<T: Transport> Engine<T> {
             media_pause: Duration::from_millis(500),
             expression_jobs: Vec::new(),
             expression_scheduled: false,
+            receipts: HashMap::new(),
+            dirty_receipts: HashSet::new(),
+            receipts_flush_at: Instant::now(),
+            receipts_synced: HashMap::new(),
+            queued_receipts: HashSet::new(),
         }
     }
 
@@ -175,7 +203,8 @@ impl<T: Transport> Engine<T> {
         if let Some(cursor) = before {
             cursor.validate()?;
         }
-        if let Some(page) = self.store.page(chat, before, self.policy.messages)? {
+        if let Some(mut page) = self.store.page(chat, before, self.policy.messages)? {
+            self.decorate_receipts(chat, &mut page.messages)?;
             return Ok(page);
         }
         self.pace(self.last_request, self.page_pause, generation)?;
@@ -196,7 +225,9 @@ impl<T: Transport> Engine<T> {
         if let Some(cursor) = &page.next_cursor {
             cursor.validate()?;
         }
-        self.store.save_page(chat, before, &page)
+        let mut page = self.store.save_page(chat, before, &page)?;
+        self.decorate_receipts(chat, &mut page.messages)?;
+        Ok(page)
     }
 
     fn queue_media(&mut self, chat: &str, rows: &[Value], generation: u64) {
@@ -326,6 +357,37 @@ impl<T: Transport> Engine<T> {
 
     fn command(&mut self, command: Command) -> Result<bool> {
         match command {
+            Command::FlushReceipts { done } => {
+                let _ = done.send(self.flush_receipts());
+            }
+            Command::SyncReceipts { chat, generation } => {
+                self.valid(generation)?;
+                self.emit_receipts(&chat)?;
+                self.queue_receipts(&chat, generation);
+            }
+            Command::PeerRead {
+                chat,
+                reader,
+                message,
+                generation,
+            } => {
+                self.valid(generation)?;
+                if chat.is_empty() || (chat.starts_with('u') && reader != chat) {
+                    return Ok(true);
+                }
+                self.load_receipts(&chat)?;
+                let key = (self.account.clone(), chat.clone());
+                if self.receipts.get_mut(&key).unwrap().peer_read(
+                    &reader,
+                    &message,
+                    &self.account,
+                    chat.starts_with('u'),
+                ) {
+                    self.dirty_receipts.insert(key);
+                    self.emit_receipts(&chat)?;
+                    self.queue_receipts(&chat, generation);
+                }
+            }
             Command::Operation {
                 id,
                 method,
@@ -494,9 +556,13 @@ impl<T: Transport> Engine<T> {
                             .store
                             .catalog("expression_installed_emoji", i64::MAX)?
                             .unwrap_or_default();
-                        let (text, metadata) = crate::expressions::compose(
+                        let mentions = serde_json::from_value::<Vec<crate::mentions::Mention>>(
+                            params.get("mentions").cloned().unwrap_or(json!([])),
+                        )?;
+                        let (text, metadata) = crate::mentions::compose(
                             params["text"].as_str().unwrap_or_default(),
                             &installed,
+                            &mentions,
                         );
                         params["text"] = json!(text);
                         params["contentMetadata"] = metadata;
@@ -613,6 +679,7 @@ impl<T: Transport> Engine<T> {
                             let chat = params["chatMid"].as_str().unwrap_or_default();
                             self.store
                                 .save_messages(chat, std::slice::from_ref(&message))?;
+                            self.decorate_receipts(chat, std::slice::from_mut(&mut message))?;
                             self.store.invalidate(chat)?;
                             self.queue_media(chat, std::slice::from_ref(&message), generation);
                             if let Some(object) = message.as_object_mut() {
@@ -664,6 +731,9 @@ impl<T: Transport> Engine<T> {
                             self.queued_gaps.clear();
                         }
                         self.store.clear_scope(kind)?;
+                        if matches!(kind, "all" | "messages") {
+                            self.clear_receipts();
+                        }
                         if matches!(kind, "all" | "stickers") {
                             self.expressions_cache_cleared(generation)?;
                         }
@@ -719,6 +789,13 @@ impl<T: Transport> Engine<T> {
                 if self.account == account && self.session_generation == generation {
                     return Ok(true);
                 }
+                if let Err(error) = self.flush_receipts() {
+                    eprintln!("[core receipts] {error}");
+                }
+                self.receipts
+                    .retain(|key, _| self.dirty_receipts.contains(key));
+                self.receipts_synced.clear();
+                self.queued_receipts.clear();
                 self.background.clear();
                 self.expression_scheduled = false;
                 self.expression_jobs.clear();
@@ -800,6 +877,7 @@ impl<T: Transport> Engine<T> {
                 message = crate::message::from_envelope(&message, &self.account);
                 self.store
                     .save_messages(&chat, std::slice::from_ref(&message))?;
+                self.decorate_receipts(&chat, std::slice::from_mut(&mut message))?;
                 self.store.invalidate(&chat)?;
                 self.store.invalidate_catalogs()?;
                 let mut visible = message.clone();
@@ -836,6 +914,7 @@ impl<T: Transport> Engine<T> {
                     self.queued_media.clear();
                     self.queued_gaps.clear();
                     self.store.clear()?;
+                    self.clear_receipts();
                     self.schedule_expressions(generation);
                     Ok(json!({"cleared":"messages"}))
                 })();
@@ -847,6 +926,10 @@ impl<T: Transport> Engine<T> {
 
     fn background(&mut self, work: Work) -> Result<()> {
         match work {
+            Work::Receipts { chat, generation } => {
+                self.queued_receipts.remove(&chat);
+                self.sync_receipts(&chat, generation)?;
+            }
             Work::Expression { generation } => {
                 self.expression_scheduled = false;
                 self.expression_step(generation)?;
@@ -916,6 +999,12 @@ impl<T: Transport> Engine<T> {
 
     pub fn run(mut self, rx: mpsc::Receiver<Command>) {
         loop {
+            if self.receipts_flush_at.elapsed() >= Duration::from_secs(10) {
+                if let Err(error) = self.flush_receipts() {
+                    eprintln!("[core receipts] {error}");
+                }
+                self.receipts_flush_at = Instant::now();
+            }
             match rx.try_recv() {
                 Ok(command) => match self.command(command) {
                     Ok(false) => break,
@@ -929,23 +1018,28 @@ impl<T: Transport> Engine<T> {
                         self.expression_scheduled = false;
                         self.queued_media.clear();
                         self.queued_gaps.clear();
+                        self.queued_receipts.clear();
                     }
                     if let Some(work) = self.background.pop_front() {
                         if let Err(e) = self.background(work) {
                             eprintln!("[core background] {e}");
                         }
                     } else {
-                        match rx.recv() {
+                        match rx.recv_timeout(Duration::from_secs(1)) {
                             Ok(command) => match self.command(command) {
                                 Ok(false) => break,
                                 Err(e) => eprintln!("[core] {e}"),
                                 _ => {}
                             },
-                            Err(_) => break,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         }
                     }
                 }
             }
+        }
+        if let Err(error) = self.flush_receipts() {
+            eprintln!("[core receipts] {error}");
         }
     }
 }

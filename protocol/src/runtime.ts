@@ -7,6 +7,7 @@ import { attachLive, errorReport } from "./live.ts";
 import { packRaw } from "./raw_codec.ts";
 import * as calls from "./calls.ts";
 import { unsendFromOperation } from "./events.ts";
+import { readFromOperation } from "./receipts.ts";
 
 type Json = Record<string, unknown>;
 const worker = globalThis as unknown as {
@@ -71,9 +72,10 @@ async function connected(next: Client, loginDevice: LineDevice) {
     if (client !== next) return;
     try {
       const unsent = unsendFromOperation(op);
+      const read = readFromOperation(op);
       if (unsent) event("message_unsent", unsent);
-      else if (String(op.type) === "NOTIFIED_READ_MESSAGE") {
-        event("read_receipt", { chatMid: op.param1, messageId: op.param3 });
+      else if (read) {
+        event("peer_read", read);
       } else if (/CONTACT|FRIEND|PROFILE/.test(String(op.type))) {
         event("catalog_invalidated");
       }

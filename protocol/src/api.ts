@@ -6,6 +6,7 @@ import { Buffer } from "node:buffer";
 import { takeDecodeEnvelope } from "./live.ts";
 import { notesRpc } from "./notes.ts";
 import { downloadMedia } from "./media.ts";
+import { normalizeReadRanges } from "./receipts.ts";
 
 type Json = Record<string, unknown>;
 export function createApi(
@@ -86,6 +87,7 @@ export function createApi(
               deliveredTime: coerceI64(end.deliveredTime),
             },
             messagesCount: 20,
+            withReadCount: true,
           },
         });
         const messages = [];
@@ -142,6 +144,12 @@ export function createApi(
         }));
       case "bridge_groups":
         return (await c.fetchJoinedChats()).map((chat) => chat.raw);
+      case "bridge_chat_members":
+        return await c.base.talk.getChat({
+          chatMid: String(p.chatMid),
+          withMembers: true,
+          withInvitees: false,
+        });
       case "bridge_owned_stickers":
       case "bridge_owned_expressions": {
         const { ShopService } = await import(
@@ -197,6 +205,12 @@ export function createApi(
         });
         return { rawMessage: packRaw(raw) };
       }
+      case "bridge_read_ranges":
+        return normalizeReadRanges(
+          await c.base.talk.getMessageReadRange({
+            chatIds: [String(p.chatMid)],
+          }),
+        );
       case "bridge_mark_read":
         await c.base.talk.sendChatChecked({
           chatMid: String(p.chatMid),

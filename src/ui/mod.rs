@@ -9,6 +9,7 @@ mod expressions;
 mod friends;
 mod login;
 mod media;
+mod mentions;
 mod messages;
 mod notes;
 mod notifications;
@@ -46,6 +47,15 @@ pub fn run(repo_root: PathBuf, data_dir: PathBuf) -> Result<()> {
         .flags(gio::ApplicationFlags::FLAGS_NONE)
         .build();
 
+    app.connect_window_added(|_, window| {
+        // GTK has created the native surface and applied its themed icon by
+        // the time this handler runs. Override it with the bundled artwork.
+        window.connect_realize(apply_window_icon);
+        if window.is_realized() {
+            apply_window_icon(window);
+        }
+    });
+
     app.connect_activate(move |app| {
         if let Err(e) = build_ui(app, repo_root.clone(), data_dir.clone()) {
             eprintln!("failed to start UI: {e:#}");
@@ -68,6 +78,10 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     apply_animations(config.borrow().animations);
 
     let sidecar = Rc::new(Sidecar::spawn(&repo_root, &data_dir)?);
+    {
+        let sidecar = sidecar.clone();
+        app.connect_shutdown(move |_| sidecar.shutdown());
+    }
     crate::i18n::set_lang(&repo_root, &config.borrow().language);
 
     let window = ApplicationWindow::builder()
@@ -127,6 +141,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         message_list: shell.message_list,
         message_scroll: shell.message_scroll,
         composer: shell.composer,
+        mention_ui: mentions::MentionUi::new(),
         composer_row: shell.composer_row,
         reply_bar: shell.reply_bar,
         reply_label: shell.reply_label,
@@ -171,7 +186,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         history_loading: Rc::new(RefCell::new(false)),
         history_has_more: Rc::new(RefCell::new(false)),
         last_incoming_id: Rc::new(RefCell::new(None)),
-        read_upto: Rc::new(RefCell::new(HashMap::new())),
+        read_counts: Rc::new(RefCell::new(HashMap::new())),
         restored_last_chat: Rc::new(RefCell::new(false)),
         media_queue: Rc::new(RefCell::new(VecDeque::new())),
         media_pumping: Rc::new(RefCell::new(false)),
@@ -266,6 +281,18 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         });
     }
     pump_tray_actions(state.clone(), tray_rx);
+    {
+        // Receipt freshness is independent of the message-page cache.
+        let state = state.clone();
+        glib::timeout_add_local(std::time::Duration::from_secs(30), move || {
+            if *state.session_ready.borrow()
+                && let Some(chat) = state.current_chat.borrow().as_deref()
+            {
+                let _ = state.sidecar.sync_receipts(chat);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
     pump_events(state);
     Ok(())
 }
@@ -284,6 +311,7 @@ const WINDOW_MIN_W: i32 = 720;
 const WINDOW_MIN_H: i32 = 480;
 
 fn register_app_icons(repo_root: &std::path::Path) {
+    gtk::Window::set_default_icon_name("line-rust");
     let icon_root = repo_root.join("assets/icons");
     if !icon_root.is_dir() {
         return;
@@ -296,7 +324,29 @@ fn register_app_icons(repo_root: &std::path::Path) {
             theme.add_search_path(icon_root.join("hicolor").join(size).join("apps"));
         }
     }
-    gtk::Window::set_default_icon_name("line-rust");
+}
+
+fn apply_window_icon(window: &gtk::Window) {
+    let Some(surface) = window.surface().and_downcast::<gdk::Toplevel>() else {
+        return;
+    };
+    // X11 taskbars read _NET_WM_ICON, independently of the tray and in-app
+    // branding. Loading textures directly avoids stale system-theme artwork
+    // and also works when the external assets directory is unavailable.
+    // Wayland shells use the installed desktop entry's icon instead.
+    let icons: &[&[u8]] = &[
+        include_bytes!("../../assets/icons/hicolor/48x48/apps/line-rust.png"),
+        include_bytes!("../../assets/icons/hicolor/64x64/apps/line-rust.png"),
+        include_bytes!("../../assets/icons/hicolor/128x128/apps/line-rust.png"),
+        include_bytes!("../../assets/icons/hicolor/256x256/apps/line-rust.png"),
+    ];
+    let textures: Vec<_> = icons
+        .iter()
+        .map(|bytes| {
+            gdk::Texture::from_bytes(&glib::Bytes::from_static(bytes)).expect("bundled window icon")
+        })
+        .collect();
+    surface.set_icon_list(&textures);
 }
 
 fn apply_brand_icon(image: &gtk::Image) {
@@ -955,7 +1005,10 @@ fn wire_scroll_pin(state: &AppState) {
 }
 
 fn send_current(state: &AppState) {
-    let text = state.composer.text().trim().to_string();
+    let (text, mentions) = line_rust_core::mentions::trimmed(
+        &state.composer.text(),
+        &state.mention_ui.selected.borrow(),
+    );
     if text.is_empty() {
         return;
     }
@@ -968,11 +1021,13 @@ fn send_current(state: &AppState) {
     });
     let related_message_id = reply.as_ref().map(|target| target.message.id.clone());
     let (display_text, metadata) =
-        line_rust_core::expressions::compose(&text, &state.emoji_catalog.borrow());
-    match state
-        .sidecar
-        .send_message(&chat_mid, &text, related_message_id.as_deref())
-    {
+        line_rust_core::mentions::compose(&text, &state.emoji_catalog.borrow(), &mentions);
+    match state.sidecar.send_message_with_mentions(
+        &chat_mid,
+        &text,
+        related_message_id.as_deref(),
+        &mentions,
+    ) {
         Ok(id) => {
             begin_optimistic_send(
                 state,
@@ -985,6 +1040,7 @@ fn send_current(state: &AppState) {
                     from: String::new(),
                     to: chat_mid.clone(),
                     mine: true,
+                    read_count: None,
                     created_time: now_ms(),
                     content_type: "NONE".into(),
                     image_path: None,
@@ -1000,10 +1056,15 @@ fn send_current(state: &AppState) {
                 },
             );
             if let Some(Pending::Send { draft, .. }) = state.pending.borrow_mut().get_mut(&id) {
-                *draft = Some(Box::new(TextDraft { text, reply }));
+                *draft = Some(Box::new(TextDraft {
+                    text,
+                    reply,
+                    mentions,
+                }));
             }
             clear_reply(state);
             state.composer.set_text("");
+            mentions::dismiss(state);
             dismiss_new_marker(state);
             pin_messages_to_latest(state);
         }
@@ -1245,6 +1306,7 @@ fn wire_drop_attachments(state: &AppState) {
 }
 
 fn wire_actions(state: &AppState) {
+    mentions::wire(state);
     let s = state.clone();
     state.reply_cancel.connect_clicked(move |_| {
         clear_reply(&s);
@@ -1295,6 +1357,9 @@ fn wire_actions(state: &AppState) {
     let esc_win = gtk::EventControllerKey::new();
     esc_win.set_propagation_phase(gtk::PropagationPhase::Capture);
     esc_win.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape && mentions::dismiss(&s) {
+            return glib::Propagation::Stop;
+        }
         if key == gdk::Key::Escape && state_chat_open(&s) {
             clear_reply(&s);
             dismiss_new_marker(&s);
@@ -1591,6 +1656,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
 
     let already_open = state.current_chat.borrow().as_deref() == Some(chat.mid.as_str());
     if already_open {
+        let _ = state.sidecar.sync_receipts(&chat.mid);
         // Tap again while already open: mark read without reloading the thread.
         mark_chat_read(state, &chat.mid);
         clear_unread_badge(state, &chat.mid);
@@ -1600,6 +1666,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     state.current_chat.borrow_mut().replace(chat.mid.clone());
+    mentions::reset(state);
     clear_reply(state);
     hide_upload_progress(state);
     {
@@ -1655,10 +1722,12 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
             );
         }
     }
+    let _ = state.sidecar.sync_receipts(&chat.mid);
     sync_discord_rpc(state);
 }
 
 fn restart_qr_login(state: &AppState) {
+    mentions::reset(state);
     expressions::close(state);
     *state.restarting.borrow_mut() = true;
     state.pending.borrow_mut().clear();

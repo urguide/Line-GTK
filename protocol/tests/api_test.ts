@@ -5,6 +5,43 @@ import { packRaw, unpackRaw, wireLine } from "../src/raw_codec.ts";
 import { coerceI64 } from "../src/messages.ts";
 import { unsendFromOperation } from "../src/events.ts";
 
+Deno.test("mention members request only current chat participants and metadata survives send", async () => {
+  const metadata = { MENTION: '{"MENTIONEES":[{"S":"3","E":"10","M":"u1"}]}' };
+  const client = {
+    base: {
+      talk: {
+        getChat: (p: unknown) => {
+          assertEquals(p, {
+            chatMid: "c1",
+            withMembers: true,
+            withInvitees: false,
+          });
+          return Promise.resolve({
+            extra: { groupExtra: { memberMids: { u1: 1 } } },
+          });
+        },
+        sendMessage: (p: Record<string, unknown>) => {
+          assertEquals(p.contentMetadata, metadata);
+          assertEquals(p.text, "😀 @Johnny");
+          assertEquals(p.relatedMessageId, "123");
+          return Promise.resolve({ id: "124" });
+        },
+      },
+    },
+  } as unknown as Client;
+  const api = createApi(() => client, "/unused");
+  assertEquals(await api("bridge_chat_members", { chatMid: "c1" }), {
+    extra: { groupExtra: { memberMids: { u1: 1 } } },
+  });
+  const sent = await api("bridge_send_text", {
+    chatMid: "c1",
+    text: "😀 @Johnny",
+    contentMetadata: metadata,
+    relatedMessageId: "123",
+  }) as { rawMessage: { contentMetadata: unknown } };
+  assertEquals(sent.rawMessage.contentMetadata, metadata);
+});
+
 Deno.test("inline emoji metadata accompanies encrypted text and the saved outgoing message", async () => {
   const metadata = {
     REPLACE: JSON.stringify({

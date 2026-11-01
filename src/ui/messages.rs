@@ -444,15 +444,29 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             .build();
         col.append(&content);
 
-        let read = state
-            .current_chat
+        let chat = state.current_chat.borrow().clone().unwrap_or_default();
+        let count = state
+            .read_counts
             .borrow()
-            .as_ref()
-            .and_then(|mid| state.read_upto.borrow().get(mid).cloned())
-            .map(|upto| msg_id_le(&msg.id, &upto))
-            .unwrap_or(false);
+            .get(&chat)
+            .and_then(|counts| counts.get(&msg.id))
+            .copied()
+            .max(msg.read_count);
+        if let Some(count) = count {
+            state
+                .read_counts
+                .borrow_mut()
+                .entry(chat.clone())
+                .or_default()
+                .insert(msg.id.clone(), count);
+        }
+        let read = count.is_some_and(|n| n > 0);
         let status = gtk::Label::builder()
-            .label(format_outgoing_status(read, msg.created_time))
+            .label(format_outgoing_status(
+                count,
+                chat.starts_with(['c', 'r']),
+                msg.created_time,
+            ))
             .halign(gtk::Align::End)
             .tooltip_text(if read {
                 crate::i18n::t("status_read")
@@ -721,9 +735,17 @@ pub(super) fn apply_message_unsent(state: &AppState, chat_mid: &str, message_id:
     *state.msg_list_fp.borrow_mut() = None;
 }
 
-pub(super) fn format_outgoing_status(read: bool, created_ms: i64) -> String {
+pub(super) fn format_outgoing_status(count: Option<u64>, group: bool, created_ms: i64) -> String {
     let t = format_msg_time(created_ms);
-    if read {
+    if let Some(count) = count.filter(|n| *n > 0) {
+        if group {
+            let read = crate::i18n::tf("status_read_count", &[("n", &count.to_string())]);
+            return if t.is_empty() {
+                read
+            } else {
+                format!("{read} {t}")
+            };
+        }
         // Mobile LINE style: "Read 4:34 PM" (+ ✓✓ cue)
         if t.is_empty() {
             format!("✓✓ {}", crate::i18n::t("status_read"))
@@ -1320,6 +1342,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
         from: String::new(),
         to: String::new(),
         mine: true,
+        read_count: None,
         created_time: 0,
         content_type: "AUDIO".into(),
         image_path: None,
@@ -1866,5 +1889,22 @@ pub(super) fn jump_to_latest(state: &AppState) {
     if let Some(mid) = state.current_chat.borrow().clone() {
         mark_chat_read(state, &mid);
         clear_unread_badge(state, &mid);
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    #[test]
+    fn direct_read_keeps_checks_and_groups_show_counts_only_when_positive() {
+        assert_eq!(format_outgoing_status(None, true, 0), "✓");
+        assert_eq!(format_outgoing_status(Some(0), true, 0), "✓");
+        assert!(format_outgoing_status(Some(1), false, 0).starts_with("✓✓ "));
+        assert_eq!(
+            format_outgoing_status(Some(3), true, 0),
+            crate::i18n::tf("status_read_count", &[("n", "3")])
+        );
+        assert!(!format_outgoing_status(Some(3), true, 0).contains('✓'));
     }
 }

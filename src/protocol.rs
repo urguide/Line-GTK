@@ -89,6 +89,8 @@ pub struct MessageInfo {
     pub to: String,
     #[serde(default)]
     pub mine: bool,
+    #[serde(rename = "readCount", default)]
+    pub read_count: Option<u64>,
     #[serde(rename = "createdTime", default)]
     pub created_time: i64,
     #[serde(rename = "contentType", default)]
@@ -188,9 +190,10 @@ pub enum ProtocolEvent {
         label: String,
         done: bool,
     },
-    ReadReceipt {
+    ReadCounts {
+        account: String,
         chat_mid: String,
-        message_id: String,
+        counts: std::collections::HashMap<String, u64>,
     },
     CallIncoming {
         call_id: String,

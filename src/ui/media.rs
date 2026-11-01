@@ -1242,6 +1242,7 @@ pub(super) fn send_local_image_file(state: &AppState, path: &std::path::Path) ->
                     from: String::new(),
                     to: chat_mid.clone(),
                     mine: true,
+                    read_count: None,
                     created_time: now_ms(),
                     content_type: "IMAGE".into(),
                     image_path: Some(path_str.clone()),

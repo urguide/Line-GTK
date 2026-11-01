@@ -102,6 +102,7 @@ fn hide_chat(state: &AppState, mid: &str) {
     }
     if state.current_chat.borrow().as_deref() == Some(mid) {
         *state.current_chat.borrow_mut() = None;
+        mentions::reset(state);
         clear_reply(state);
         clear_messages(state);
         state.chat_list.unselect_all();
@@ -734,13 +735,6 @@ pub(super) fn clear_list(list: &gtk::ListBox) {
     }
 }
 
-pub(super) fn msg_id_le(a: &str, b: &str) -> bool {
-    match (a.parse::<u128>(), b.parse::<u128>()) {
-        (Ok(x), Ok(y)) => x <= y,
-        _ => a <= b,
-    }
-}
-
 pub(super) fn mark_chat_read(state: &AppState, chat_mid: &str) {
     if !state.config.borrow().auto_mark_read {
         return;
@@ -847,29 +841,25 @@ fn toggle_chat_mute_for(state: &AppState, mid: &str) {
     }
 }
 
-pub(super) fn apply_peer_read(state: &AppState, chat_mid: &str, message_id: &str) {
-    if chat_mid.is_empty() || message_id.is_empty() {
-        return;
+pub(super) fn apply_read_counts(state: &AppState, chat_mid: &str, counts: HashMap<String, u64>) {
+    let mut all = state.read_counts.borrow_mut();
+    let current = all.entry(chat_mid.to_owned()).or_default();
+    for (id, count) in counts {
+        let previous = current.entry(id).or_default();
+        *previous = (*previous).max(count);
     }
-    let prev = state.read_upto.borrow().get(chat_mid).cloned();
-    if let Some(p) = prev.as_deref()
-        && msg_id_le(message_id, p)
-    {
-        return;
-    }
-    state
-        .read_upto
-        .borrow_mut()
-        .insert(chat_mid.to_string(), message_id.to_string());
-
     if state.current_chat.borrow().as_deref() != Some(chat_mid) {
         return;
     }
     let times = state.msg_created.borrow().clone();
     for (id, label) in state.receipt_slots.borrow().iter() {
-        if msg_id_le(id, message_id) {
+        if let Some(count) = current.get(id).filter(|n| **n > 0) {
             let ts = times.get(id).copied().unwrap_or(0);
-            label.set_text(&format_outgoing_status(true, ts));
+            label.set_text(&format_outgoing_status(
+                Some(*count),
+                chat_mid.starts_with(['c', 'r']),
+                ts,
+            ));
             label.set_tooltip_text(Some(&crate::i18n::t("status_read")));
             label.add_css_class("line-msg-status-read");
         }

@@ -1,4 +1,9 @@
 {
+  "mention_loading": "Loading chat members…",
+  "mention_failed": "Could not load chat members.",
+  "mention_retry": "Retry",
+  "mention_empty": "No matching members",
+  "mention_hint": "Mention a member · ↑↓ select · Enter / Tab confirm · Esc close",
   "app_title": "line-rust",
   "app_name": "line-rust",
   "emojis": "Emoji",
@@ -231,6 +236,7 @@
   "chat_prefix": "Chat · {name}",
   "status_sent": "Sent",
   "status_read": "Read",
+  "status_read_count": "Read {n}",
   "search": "Search",
   "voice_message": "Voice message",
   "play_voice": "Play",

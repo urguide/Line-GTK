@@ -110,6 +110,22 @@ impl CoreBridge {
             return true;
         }
         match response.event.as_deref() {
+            Some("peer_read") => {
+                let p = &response.extra;
+                if let (Some(chat), Some(reader), Some(message)) = (
+                    p["chatMid"].as_str(),
+                    p["readerMid"].as_str(),
+                    p["messageId"].as_str(),
+                ) {
+                    let _ = self.commands.send(CoreCommand::PeerRead {
+                        chat: chat.into(),
+                        reader: reader.into(),
+                        message: message.into(),
+                        generation,
+                    });
+                }
+                return true;
+            }
             Some("protocol_error") => {
                 let code = response.extra["code"].as_str().unwrap_or_default();
                 let error = response.extra["error"].as_str().unwrap_or("protocol error");
@@ -755,6 +771,11 @@ impl Ipc {
             let chat_mid = event["chatMid"].as_str().unwrap_or_default().to_owned();
             let message_id = event["messageId"].as_str().unwrap_or_default().to_owned();
             match event["event"].as_str() {
+                Some("read_counts") => Some(ProtocolEvent::ReadCounts {
+                    account: event["account"].as_str().unwrap_or_default().into(),
+                    chat_mid,
+                    counts: serde_json::from_value(event["counts"].clone()).unwrap_or_default(),
+                }),
                 Some("avatar_ready") => Some(ProtocolEvent::AvatarReady {
                     mid: event["mid"].as_str().unwrap_or_default().into(),
                     avatar_path: event["avatarPath"].as_str().unwrap_or_default().into(),
@@ -801,6 +822,44 @@ impl Ipc {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+    #[test]
+    fn peer_receipts_route_through_core_and_counts_reach_ui_with_account() {
+        let (commands, rx) = mpsc::channel();
+        let (events, ui) = async_channel::unbounded();
+        let bridge = CoreBridge {
+            memory: Arc::default(),
+            audio: Default::default(),
+            data: PathBuf::new(),
+            commands,
+            replies: Arc::default(),
+            generation: Arc::new(AtomicU64::new(1)),
+            stdin: Arc::new(Mutex::new(None)),
+            events: events.clone(),
+            failed_generation: Arc::new(AtomicU64::new(0)),
+        };
+        let response: Response = serde_json::from_value(json!({"event":"peer_read", "chatMid":"c1", "readerMid":"u1", "messageId":"9007199254740993"})).unwrap();
+        assert!(bridge.route(&response, 1));
+        assert!(
+            matches!(rx.try_recv().unwrap(), CoreCommand::PeerRead { chat, reader, message, generation:1 } if chat=="c1" && reader=="u1" && message=="9007199254740993")
+        );
+        assert!(ui.try_recv().is_err());
+        bridge.route(&response, 0);
+        assert!(rx.try_recv().is_err());
+        let ipc = Ipc {
+            stdin: bridge.stdin.clone(),
+            replies: Arc::default(),
+            ids: Arc::new(AtomicU64::new(1)),
+            generation: bridge.generation.clone(),
+            events,
+            data: PathBuf::new(),
+            asset_at: Mutex::new(None),
+        };
+        ipc.emit_ui_event(json!({"event":"read_counts","account":"me","chatMid":"c1","counts":{"9007199254740993":3}}));
+        assert!(
+            matches!(ui.try_recv().unwrap(), ProtocolEvent::ReadCounts {account,chat_mid,counts} if account=="me" && chat_mid=="c1" && counts["9007199254740993"]==3)
+        );
+    }
+
     #[test]
     fn own_profile_avatar_is_loaded_from_rust_cache_and_forwarded_to_ui() {
         let root = std::env::temp_dir().join(format!("line-own-avatar-{}", std::process::id()));

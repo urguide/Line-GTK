@@ -112,6 +112,7 @@ impl Store {
              CREATE TABLE IF NOT EXISTS tombstones (
                account TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(account,id));
              CREATE TABLE IF NOT EXISTS migrations (path TEXT PRIMARY KEY, account TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS read_receipts (account TEXT NOT NULL,chat TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(account,chat));
              CREATE TABLE IF NOT EXISTS catalogs (account TEXT NOT NULL,kind TEXT NOT NULL,updated INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(account,kind));"
         )?;
         // Freshness invalidation is independent from disk-retention age.
@@ -136,6 +137,35 @@ impl Store {
 
     pub fn set_account(&mut self, account: &str) {
         self.account = account.to_owned();
+    }
+
+    pub fn receipts(&self, chat: &str) -> Result<crate::receipts::Receipts> {
+        let body: Option<String> = self
+            .db
+            .query_row(
+                "SELECT body FROM read_receipts WHERE account=?1 AND chat=?2",
+                params![self.account, chat],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(body
+            .map(|body| serde_json::from_str(&body))
+            .transpose()?
+            .unwrap_or_default())
+    }
+
+    /// One transaction for all dirty conversations, without refreshing history TTLs.
+    pub fn save_receipts(&mut self, rows: &[(String, String, String)]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let tx = self.db.transaction()?;
+        for (account, chat, body) in rows {
+            tx.execute("INSERT INTO read_receipts VALUES(?1,?2,?3) ON CONFLICT(account,chat) DO UPDATE SET body=excluded.body",
+                params![account, chat, body])?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn catalog(&self, kind: &str, ttl: i64) -> Result<Option<Value>> {
@@ -573,7 +603,7 @@ impl Store {
     pub fn clear_scope(&mut self, kind: &str) -> Result<()> {
         let tx = self.db.transaction()?;
         if matches!(kind, "all" | "messages") {
-            for table in ["messages", "pages", "gaps", "heads"] {
+            for table in ["messages", "pages", "gaps", "heads", "read_receipts"] {
                 tx.execute(
                     &format!("DELETE FROM {table} WHERE account=?1"),
                     params![self.account],
