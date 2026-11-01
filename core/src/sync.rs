@@ -891,7 +891,7 @@ impl<T: Transport> Engine<T> {
                     obj.remove("rawMessage");
                 }
                 self.transport
-                    .emit(json!({"event":"message","message":visible}));
+                    .emit(json!({"event":"message","chatMid":chat,"message":visible}));
                 self.queue_media(&chat, &[message], generation);
             }
             Command::Unsend {

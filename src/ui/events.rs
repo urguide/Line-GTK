@@ -135,14 +135,23 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             tracing::debug!(%call_id, %peer, state = %call_state, ?error, "call state changed");
             handle_call_state(state, &peer, &call_state, error.as_deref());
         }
-        ProtocolEvent::Message(msg) => {
+        ProtocolEvent::Message {
+            chat_mid: peer,
+            message: msg,
+        } => {
             if state.unsent_msg_ids.borrow().contains(&msg.id) {
                 return;
             }
-            let peer = if msg.mine {
-                msg.to.clone()
+            // Older event envelopes may omit chatMid; group/room destinations
+            // still take precedence over the sender for incoming messages.
+            let peer = if peer.is_empty() {
+                if msg.mine || msg.to.starts_with(['c', 'r']) {
+                    msg.to.clone()
+                } else {
+                    msg.from.clone()
+                }
             } else {
-                msg.from.clone()
+                peer
             };
             let mut preview = format!(
                 "{}: {}",
@@ -161,7 +170,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 &ChatInfo {
                     mid: peer.clone(),
                     name: peer_display_name(state, &peer),
-                    kind: if peer.starts_with('c') {
+                    kind: if peer.starts_with(['c', 'r']) {
                         "group".into()
                     } else {
                         "dm".into()

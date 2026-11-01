@@ -793,7 +793,7 @@ impl Ipc {
                 }),
                 Some("message") => serde_json::from_value(event["message"].clone())
                     .ok()
-                    .map(ProtocolEvent::Message),
+                    .map(|message| ProtocolEvent::Message { chat_mid, message }),
                 Some("message_unsent") => Some(ProtocolEvent::MessageUnsent {
                     chat_mid,
                     message_id,
@@ -822,6 +822,86 @@ impl Ipc {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+
+    #[test]
+    fn live_messages_keep_the_same_chat_in_storage_and_ui() {
+        let root = std::env::temp_dir().join(format!("line-live-routing-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("messages.sqlite3");
+        let store = Store::open(&db).unwrap();
+        let (commands, rx) = mpsc::channel();
+        let (events, ui) = async_channel::unbounded();
+        let bridge = CoreBridge {
+            memory: Arc::default(),
+            audio: Default::default(),
+            data: root.clone(),
+            commands,
+            replies: Arc::default(),
+            generation: Arc::new(AtomicU64::new(1)),
+            stdin: Arc::new(Mutex::new(None)),
+            events: events.clone(),
+            failed_generation: Arc::new(AtomicU64::new(0)),
+        };
+        let ipc = Ipc {
+            stdin: bridge.stdin.clone(),
+            replies: bridge.replies.clone(),
+            ids: Arc::new(AtomicU64::new(1)),
+            generation: bridge.generation.clone(),
+            events,
+            data: root.clone(),
+            asset_at: Mutex::new(None),
+        };
+        let engine = Engine::new(store, ipc, bridge.generation.clone(), root.join("legacy"));
+        let session =
+            serde_json::from_value(json!({"event":"core_session","mid":"u-self"})).unwrap();
+        assert!(bridge.route(&session, 1));
+        let cases = [
+            ("c-group", "u-peer", "c-group", false),
+            ("r-room", "u-peer", "r-room", false),
+            ("u-peer", "u-peer", "u-self", false),
+            ("c-group", "u-self", "c-group", false),
+            ("r-room", "u-self", "r-room", false),
+            ("u-peer", "u-self", "u-peer", false),
+            ("c-group", "u-peer", "c-group", true),
+            ("r-room", "u-peer", "r-room", true),
+        ];
+        for (index, (chat, from, to, failed)) in cases.iter().enumerate() {
+            let raw = json!({"id":(index + 1).to_string(),"from":from,"to":to,
+                "createdTime":index + 1,"contentType":"NONE","text":"hello"});
+            let response = serde_json::from_value(json!({"event":"message","chatMid":chat,
+                "message":{"rawMessage":raw,"decodedMessage":if *failed { Value::Null } else { raw.clone() },
+                "decodeError":if *failed { json!("message_decode_failed") } else { Value::Null }}})).unwrap();
+            assert!(bridge.route(&response, 1));
+        }
+        bridge.commands.send(CoreCommand::Stop).unwrap();
+        engine.run(rx);
+
+        let mut store = Store::open(&db).unwrap();
+        store.set_account("u-self");
+        for (index, (chat, from, to, _)) in cases.iter().enumerate() {
+            let ProtocolEvent::Message { chat_mid, message } = ui.try_recv().unwrap() else {
+                panic!("expected live message");
+            };
+            assert_eq!(chat_mid, *chat);
+            assert_eq!(message.id, (index + 1).to_string());
+            assert_eq!(message.from, *from);
+            assert_eq!(message.to, *to);
+            assert_eq!(message.mine, *from == "u-self");
+            assert_eq!(
+                store.message(chat, &message.id).unwrap().unwrap()["text"],
+                message.text
+            );
+            for other in ["c-group", "r-room", "u-peer", "u-self"] {
+                if other != *chat {
+                    assert!(store.message(other, &message.id).unwrap().is_none());
+                }
+            }
+        }
+        assert!(ui.try_recv().is_err());
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn peer_receipts_route_through_core_and_counts_reach_ui_with_account() {
         let (commands, rx) = mpsc::channel();

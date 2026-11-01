@@ -135,7 +135,10 @@ pub enum ProtocolEvent {
     },
     Listening,
     ExpressionState(Value),
-    Message(Box<MessageInfo>),
+    Message {
+        chat_mid: String,
+        message: Box<MessageInfo>,
+    },
     MessageUnsent {
         chat_mid: String,
         message_id: String,

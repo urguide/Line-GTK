@@ -754,7 +754,13 @@ fn read_loop_inner<R: std::io::Read>(
                         "message" => {
                             if let Some(msg) = resp.extra.get("message") {
                                 match serde_json::from_value(msg.clone()) {
-                                    Ok(m) => ProtocolEvent::Message(Box::new(m)),
+                                    Ok(m) => ProtocolEvent::Message {
+                                        chat_mid: resp.extra["chatMid"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .to_owned(),
+                                        message: Box::new(m),
+                                    },
                                     Err(e) => ProtocolEvent::Error(e.to_string()),
                                 }
                             } else {
@@ -1103,6 +1109,23 @@ impl Drop for Sidecar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_message_event_preserves_chat_instead_of_using_sender() {
+        let input = concat!(
+            "{\"event\":\"message\",\"chatMid\":\"r-room\",\"message\":{\"id\":\"1\",\"from\":\"u-peer\",\"to\":\"r-room\"}}\n",
+            "{\"event\":\"message\",\"chatMid\":\"c-group\",\"message\":{\"id\":\"2\",\"from\":\"u-peer\",\"to\":\"c-group\"}}\n",
+        );
+        let (tx, rx) = async_channel::unbounded();
+        read_loop(input.as_bytes(), tx, Arc::new(Mutex::new(HashSet::new())));
+        for expected in ["r-room", "c-group"] {
+            assert!(matches!(
+                rx.try_recv().unwrap(),
+                ProtocolEvent::Message { chat_mid, message }
+                    if chat_mid == expected && message.from == "u-peer"
+            ));
+        }
+    }
 
     #[test]
     fn unsend_event_preserves_identifiers_and_rejects_missing_fields() {
