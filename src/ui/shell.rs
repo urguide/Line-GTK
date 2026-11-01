@@ -47,6 +47,7 @@ pub struct ShellWidgets {
     pub sticker_btn: gtk::Button,
     pub call_btn: gtk::Button,
     pub mute_btn: gtk::Button,
+    pub notes_btn: gtk::Button,
     pub jump_banner: gtk::Revealer,
     pub jump_banner_btn: gtk::Button,
     pub jump_banner_label: gtk::Label,
@@ -301,6 +302,13 @@ pub fn build_shell_page() -> ShellWidgets {
         .sensitive(false)
         .build();
     chat_bar.append(&title_col);
+    let notes_btn = gtk::Button::builder()
+        .icon_name("accessories-text-editor-symbolic")
+        .tooltip_text(crate::i18n::t("notes"))
+        .css_classes(["flat", "circular"])
+        .sensitive(false)
+        .build();
+    chat_bar.append(&notes_btn);
     chat_bar.append(&mute_btn);
     chat_bar.append(&call_btn);
 
@@ -614,6 +622,7 @@ pub fn build_shell_page() -> ShellWidgets {
         sticker_btn,
         call_btn,
         mute_btn,
+        notes_btn,
         jump_banner,
         jump_banner_btn,
         jump_banner_label,

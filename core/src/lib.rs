@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod data_dir;
 pub mod friends;
 pub mod message;
+pub mod notes;
 pub mod postback;
 pub mod session;
 pub mod sticker_cache;

@@ -399,6 +399,7 @@ impl Ipc {
     ) -> Result<Value> {
         self.active(generation)?;
         match method {
+            "notes" => self.notes_operation(p, generation),
             "profile_avatar" => {
                 let mid = p["mid"].as_str().context("profile ID missing")?;
                 let picture = line_rust_core::catalog::picture(&p)
@@ -447,8 +448,8 @@ impl Ipc {
             ),
             "clear_cache" => {
                 let kind = p["kind"].as_str().unwrap_or("all");
-                for name in ["media", "stickers", "avatars"] {
-                    if kind == "all" || kind == name {
+                for name in ["media", "notes", "stickers", "avatars"] {
+                    if kind == "all" || kind == name || (kind == "media" && name == "notes") {
                         let directory = self.data.join("cache").join(name);
                         if directory.is_dir() {
                             std::fs::remove_dir_all(directory)?;

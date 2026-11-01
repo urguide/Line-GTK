@@ -290,6 +290,7 @@ impl Sidecar {
                 | "mute_chat"
                 | "add_friend"
                 | "clear_cache"
+                | "notes"
         ) {
             self.core.commands.send(CoreCommand::Operation {
                 id,

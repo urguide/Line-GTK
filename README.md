@@ -286,6 +286,22 @@ Replies use LINE's native message relation, so other LINE clients can display
 the quote too. Click **×** or press Escape to cancel. Switching chats clears the
 reply target. Quoted messages outside the loaded history show a placeholder.
 
+## Conversation notes
+
+The Notes button in the upper-right conversation toolbar opens the shared LINE
+notebook for that chat. It supports paginated posts, text/photo/video publishing,
+post details, comments, likes, and editing/deleting your own notes. Photos and
+videos in existing notes open in the media viewer. Editing changes the text while
+preserving the server's existing attachments; attachment selection is available
+when creating a post (up to 20 files). Sticker/location attachments are indicated
+in the post, and rich comment attachments are counted rather than rendered.
+
+Direct chats resolve LINE's private one-to-one notebook ID instead of using the
+peer's public profile. Merely opening an empty notebook does not create one.
+Writes are sent once, and API failures are displayed without claiming success.
+The protocol adapter uses authenticated Notes endpoints; actual availability
+depends on the signed-in LINE account and server permissions.
+
 ## Unsend messages
 
 To unsend a sent message, right-click its bubble or open the **⋮** menu next

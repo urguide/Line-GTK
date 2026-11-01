@@ -129,6 +129,8 @@ pub(super) struct AppState {
     pub sticker_popover: gtk::Popover,
     pub call_btn: gtk::Button,
     pub mute_btn: gtk::Button,
+    pub notes_btn: gtk::Button,
+    pub notes_ui: Rc<RefCell<Option<Rc<super::notes::NotesUi>>>>,
     pub composer_stack: gtk::Stack,
     pub record_cancel_btn: gtk::Button,
     pub record_send_btn: gtk::Button,
@@ -171,6 +173,11 @@ pub(super) struct PendingNotif {
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    Notes {
+        ui: std::rc::Weak<super::notes::NotesUi>,
+        action: String,
+        append: bool,
+    },
     Login,
     ListChats,
     ListFriends,

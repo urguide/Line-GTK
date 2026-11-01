@@ -52,6 +52,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             on_logged_in(state, &result);
         }
         ProtocolEvent::SessionFailed { error } => {
+            notes::close(state);
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
             let msg = if error.contains("relogin_android_required") {
@@ -494,6 +495,12 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::Notes { ui, action, append }) = pending.as_ref() {
+                if let Some(ui) = ui.upgrade() {
+                    notes::response(state, &ui, action, *append, ok, &result, error.as_deref());
+                }
+                return;
+            }
             if !ok {
                 if matches!(pending, Some(Pending::Login)) && *state.restarting.borrow() {
                     return;
@@ -578,6 +585,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 return;
             }
             match pending {
+                Some(Pending::Notes { .. }) => unreachable!("notes responses handled above"),
                 Some(Pending::AddFriend) => {
                     toast(state, &crate::i18n::t("friend_ok"));
                     request_friends_list(state);
@@ -704,6 +712,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
 const MAX_SIDECAR_RECOVERY_ATTEMPTS: u8 = 3;
 
 pub(super) fn schedule_sidecar_recovery(state: &AppState) {
+    notes::close(state);
     *state.session_ready.borrow_mut() = false;
     state.pending.borrow_mut().clear();
     hide_upload_progress(state);
@@ -840,6 +849,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    notes::close(state);
     state.stack.set_visible_child_name("login");
     login::show_qr_stage(&state.login);
     state.login.hint.set_text(hint);

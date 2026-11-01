@@ -4,6 +4,7 @@ import { coerceI64 } from "./messages.ts";
 import { packRaw, unpackRaw } from "./raw_codec.ts";
 import { Buffer } from "node:buffer";
 import { takeDecodeEnvelope } from "./live.ts";
+import { notesRpc } from "./notes.ts";
 
 type Json = Record<string, unknown>;
 export function createApi(
@@ -28,6 +29,8 @@ export function createApi(
   async function rpc(method: string, p: Json): Promise<unknown> {
     const c = client();
     switch (method) {
+      case "bridge_notes":
+        return await notesRpc(c, String(p.action), p, transfer);
       case "bridge_fetch_page": {
         let end = p.before as
           | { messageId: string; deliveredTime: string }

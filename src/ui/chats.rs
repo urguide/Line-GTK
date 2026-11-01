@@ -76,6 +76,7 @@ fn hide_chat(state: &AppState, mid: &str) {
         state.chat_title.set_text(&crate::i18n::t("chats"));
         state.chat_subtitle.set_text("");
         state.mute_btn.set_sensitive(false);
+        state.notes_btn.set_sensitive(false);
         refresh_call_controls(state);
         set_msg_state(state, "idle", None);
         sync_discord_rpc(state);

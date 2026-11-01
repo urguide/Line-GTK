@@ -9,6 +9,7 @@ mod friends;
 mod login;
 mod media;
 mod messages;
+mod notes;
 mod notifications;
 mod settings;
 mod shell;
@@ -206,6 +207,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         sticker_popover: shell.sticker_popover,
         call_btn: shell.call_btn,
         mute_btn: shell.mute_btn,
+        notes_btn: shell.notes_btn,
+        notes_ui: Rc::new(RefCell::new(None)),
         composer_stack: shell.composer_stack,
         record_cancel_btn: shell.record_cancel_btn,
         record_send_btn: shell.record_send_btn,
@@ -1043,6 +1046,9 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
 fn apply_ui_language(state: &AppState) {
     crate::i18n::set_lang(&state.repo_root, &state.config.borrow().language);
     state
+        .notes_btn
+        .set_tooltip_text(Some(&crate::i18n::t("notes")));
+    state
         .reply_cancel
         .set_tooltip_text(Some(&crate::i18n::t("cancel_reply")));
     refresh_reply_preview(state);
@@ -1481,6 +1487,8 @@ fn wire_actions(state: &AppState) {
     state.mute_btn.connect_clicked(move |_| {
         toggle_chat_mute(&s);
     });
+    let s = state.clone();
+    state.notes_btn.connect_clicked(move |_| notes::open(&s));
 }
 
 fn open_friends_popup(state: &AppState) {
@@ -1600,6 +1608,9 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     // Voice calls are 1:1 user chats only (bots/groups unsupported).
     refresh_call_controls(state);
     state.mute_btn.set_sensitive(true);
+    state
+        .notes_btn
+        .set_sensitive(chat.mid.starts_with(['u', 'c', 'r']));
     update_mute_btn(state, chat_is_muted(state, &chat.mid));
     state.media_queue.borrow_mut().clear();
     set_msg_state(state, "loading", None);
