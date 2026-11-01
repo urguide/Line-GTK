@@ -100,10 +100,35 @@ fn png(path: &Path) -> bool {
 pub fn pack_icon(
     directory: &Path,
     package: &str,
-    mut fetch: impl FnMut(&str, &Path) -> Result<Fetch>,
+    fetch: impl FnMut(&str, &Path) -> Result<Fetch>,
 ) -> Result<PathBuf> {
     let urls = pack_icon_urls(package)?;
     let dest = directory.join(format!("pack-{package}.png"));
+    cached_icon(dest, urls, fetch)
+}
+
+pub fn emoji_pack_icon(
+    directory: &Path,
+    package: &str,
+    fetch: impl FnMut(&str, &Path) -> Result<Fetch>,
+) -> Result<PathBuf> {
+    if !crate::expressions::valid_id(package) {
+        bail!("invalid emoji package ID");
+    }
+    let base = "https://stickershop.line-scdn.net/sticonshop/v1";
+    let urls = vec![
+        format!("{base}/{package}/sticon/iphone/main.png"),
+        format!("{base}/sticon/{package}/android/main.png"),
+        format!("{base}/{package}/sticon/iphone/tab_on.png"),
+    ];
+    cached_icon(directory.join(package).join("main.png"), urls, fetch)
+}
+
+fn cached_icon(
+    dest: PathBuf,
+    urls: Vec<String>,
+    mut fetch: impl FnMut(&str, &Path) -> Result<Fetch>,
+) -> Result<PathBuf> {
     if png(&dest) {
         return Ok(dest);
     }

@@ -30,6 +30,53 @@ impl Drop for Temp {
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nimage bytes";
 
 #[test]
+fn emoji_covers_use_dedicated_assets_fallback_and_reuse_cache() {
+    let root = Temp::new();
+    let package = "5ac1bfd5040ab15980c9b435";
+    let mut urls = Vec::new();
+    let path = sticker_cache::emoji_pack_icon(&root.0, package, |url, dest| {
+        urls.push(url.to_owned());
+        std::fs::create_dir_all(dest.parent().unwrap())?;
+        // A non-image response must not poison the cover cache.
+        std::fs::write(
+            dest,
+            if urls.len() == 1 {
+                b"invalid".as_slice()
+            } else {
+                PNG
+            },
+        )?;
+        Ok(Fetch::Saved)
+    })
+    .unwrap();
+    assert_eq!(
+        urls,
+        [
+            format!(
+                "https://stickershop.line-scdn.net/sticonshop/v1/{package}/sticon/iphone/main.png"
+            ),
+            format!(
+                "https://stickershop.line-scdn.net/sticonshop/v1/sticon/{package}/android/main.png"
+            ),
+        ]
+    );
+    assert_eq!(path, root.0.join(package).join("main.png"));
+    assert_eq!(
+        sticker_cache::emoji_pack_icon(&root.0, package, |_, _| panic!(
+            "cached cover must not fetch"
+        ))
+        .unwrap(),
+        path
+    );
+    assert!(
+        sticker_cache::emoji_pack_icon(&root.0, "../escape", |_, _| panic!(
+            "invalid package must not fetch"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
 fn preferred_and_fallback_icons_use_legacy_order_then_reuse_disk() {
     for success in 0..3 {
         let root = Temp::new();

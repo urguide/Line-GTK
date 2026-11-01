@@ -33,6 +33,28 @@ impl Ipc {
         }
         let mut products = p["products"].as_array().cloned().unwrap_or_default();
         for product in &mut products {
+            let package = string(&product["id"]);
+            if line_rust_core::expressions::valid_id(&package) {
+                let icon = if p["kind"] == "emoji" {
+                    self.data
+                        .join("cache/stickers/emoji")
+                        .join(&package)
+                        .join("main.png")
+                } else {
+                    self.data
+                        .join("cache/stickers")
+                        .join(format!("pack-{package}.png"))
+                };
+                product["iconPath"] = if icon.is_file() {
+                    json!(icon)
+                } else {
+                    packs
+                        .iter()
+                        .find(|pack| pack["id"] == product["id"])
+                        .map(|pack| pack["iconPath"].clone())
+                        .unwrap_or(Value::Null)
+                };
+            }
             product["downloaded"] = json!(
                 packs
                     .iter()
@@ -576,6 +598,26 @@ impl Ipc {
         match method {
             "expression_library" => self.expression_library(&p),
             "download_expression" => self.download_expression(&p, generation),
+            "expression_icon" => {
+                use line_rust_core::sticker_cache::{self, Fetch};
+                let package = p["packageId"].as_str().context("missing package ID")?;
+                let fetch = |url: &str, dest: &Path| {
+                    self.active(generation)?;
+                    self.asset(url, dest, generation)?;
+                    Ok(Fetch::Saved)
+                };
+                let path = if p["kind"] == "emoji" {
+                    sticker_cache::emoji_pack_icon(
+                        &self.data.join("cache/stickers/emoji"),
+                        package,
+                        fetch,
+                    )
+                } else {
+                    sticker_cache::pack_icon(&self.data.join("cache/stickers"), package, fetch)
+                }?;
+                self.active(generation)?;
+                Ok(json!({"iconPath":path}))
+            }
             "expression_images" => {
                 let mut images = Vec::new();
                 for resource in p["resources"].as_array().into_iter().flatten().take(100) {

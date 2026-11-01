@@ -5,6 +5,7 @@ import { packRaw, unpackRaw } from "./raw_codec.ts";
 import { Buffer } from "node:buffer";
 import { takeDecodeEnvelope } from "./live.ts";
 import { notesRpc } from "./notes.ts";
+import { downloadMedia } from "./media.ts";
 
 type Json = Record<string, unknown>;
 export function createApi(
@@ -270,7 +271,7 @@ export function createApi(
         if (takeDecodeEnvelope(tm.raw)?.decodeError) {
           throw new Error("message_decode_failed");
         }
-        const blob = await tm.getData(false);
+        const blob = await downloadMedia(c, tm);
         if (method === "bridge_memory_download") {
           memoryDownloads.clear();
           const token = crypto.randomUUID();

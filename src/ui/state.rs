@@ -201,6 +201,11 @@ pub(super) enum Pending {
     ExpressionLibrary {
         ui: std::rc::Weak<super::expressions::LibraryUi>,
     },
+    ExpressionIcon {
+        ui: std::rc::Weak<super::expressions::LibraryUi>,
+        picture: glib::WeakRef<gtk::Picture>,
+        placeholder: glib::WeakRef<gtk::Image>,
+    },
     ExpressionDownload {
         ui: std::rc::Weak<super::expressions::LibraryUi>,
         package: String,

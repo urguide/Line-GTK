@@ -289,6 +289,7 @@ impl Sidecar {
                 | "expression_library"
                 | "download_expression"
                 | "expression_images"
+                | "expression_icon"
                 | "mark_read"
                 | "unsend_message"
                 | "mute_chat"

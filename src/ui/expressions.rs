@@ -18,6 +18,7 @@ pub(super) struct LibraryUi {
     done: RefCell<usize>,
     failed: RefCell<usize>,
     busy: RefCell<bool>,
+    icons: RefCell<VecDeque<(String, gtk::Picture, gtk::Image)>>,
 }
 
 pub(super) fn open_library(state: &AppState, kind: &str) {
@@ -92,6 +93,7 @@ pub(super) fn open_library(state: &AppState, kind: &str) {
         done: RefCell::new(0),
         failed: RefCell::new(0),
         busy: RefCell::new(false),
+        icons: RefCell::new(VecDeque::new()),
     });
     for (button, all) in [(&ui.selected, false), (&ui.all, true)] {
         let weak = Rc::downgrade(&ui);
@@ -207,7 +209,8 @@ pub(super) fn load_failed(ui: &LibraryUi, error: &str) {
     ui.status.set_text(error);
 }
 
-pub(super) fn fill_library(ui: &LibraryUi, result: &Value) {
+pub(super) fn fill_library(state: &AppState, ui: &Rc<LibraryUi>, result: &Value) {
+    ui.icons.borrow_mut().clear();
     while let Some(child) = ui.rows.first_child() {
         ui.rows.remove(&child);
     }
@@ -219,6 +222,29 @@ pub(super) fn fill_library(ui: &LibraryUi, result: &Value) {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let check = gtk::CheckButton::new();
         check.set_sensitive(!downloaded);
+        let icon = gtk::Overlay::new();
+        let picture = gtk::Picture::builder()
+            .content_fit(gtk::ContentFit::Contain)
+            .can_shrink(true)
+            .tooltip_text(name)
+            .build();
+        picture.set_size_request(64, 64);
+        icon.set_child(Some(&picture));
+        let placeholder = gtk::Image::from_icon_name("image-x-generic-symbolic");
+        placeholder.set_pixel_size(32);
+        placeholder.add_css_class("dim-label");
+        icon.add_overlay(&placeholder);
+        if let Some(path) = product["iconPath"]
+            .as_str()
+            .filter(|p| std::path::Path::new(p).is_file())
+        {
+            attach_texture_async(picture.clone(), path.into(), 96);
+            placeholder.set_visible(false);
+        } else {
+            ui.icons
+                .borrow_mut()
+                .push_back((id.clone(), picture, placeholder));
+        }
         let label = gtk::Label::builder()
             .label(name)
             .xalign(0.0)
@@ -232,6 +258,7 @@ pub(super) fn fill_library(ui: &LibraryUi, result: &Value) {
         })));
         status.add_css_class("dim-label");
         row.append(&check);
+        row.append(&icon);
         row.append(&label);
         row.append(&status);
         ui.rows.append(&row);
@@ -246,6 +273,51 @@ pub(super) fn fill_library(ui: &LibraryUi, result: &Value) {
             &[("count", &ui.checks.borrow().len().to_string())],
         )
     });
+    next_icon(state, ui);
+}
+
+fn next_icon(state: &AppState, ui: &Rc<LibraryUi>) {
+    // One small request at a time: the list is usable immediately, and downloads
+    // or chat operations can run between cover images. Closing drops the queue.
+    loop {
+        let Some((package, picture, placeholder)) = ui.icons.borrow_mut().pop_front() else {
+            return;
+        };
+        if let Ok(id) = state.sidecar.request(
+            "expression_icon",
+            Some(json!({"kind":ui.kind,"packageId":package})),
+        ) {
+            state.pending.borrow_mut().insert(
+                id,
+                Pending::ExpressionIcon {
+                    ui: Rc::downgrade(ui),
+                    picture: picture.downgrade(),
+                    placeholder: placeholder.downgrade(),
+                },
+            );
+            return;
+        }
+    }
+}
+
+pub(super) fn icon_done(
+    state: &AppState,
+    ui: &Rc<LibraryUi>,
+    picture: &glib::WeakRef<gtk::Picture>,
+    placeholder: &glib::WeakRef<gtk::Image>,
+    result: &Value,
+) {
+    // A refreshed list or closed window must not be updated by an older request.
+    let Some(picture) = picture.upgrade() else {
+        return;
+    };
+    if let Some(path) = result["iconPath"].as_str() {
+        attach_texture_async(picture, path.into(), 96);
+        if let Some(placeholder) = placeholder.upgrade() {
+            placeholder.set_visible(false);
+        }
+    }
+    next_icon(state, ui);
 }
 
 fn next_download(state: &AppState, ui: &Rc<LibraryUi>) {

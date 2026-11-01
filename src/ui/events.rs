@@ -601,6 +601,22 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 let err = error.as_deref().unwrap_or("request failed");
                 match pending.as_ref() {
                     Some(Pending::EmojiImages { .. }) => return,
+                    Some(Pending::ExpressionIcon {
+                        ui,
+                        picture,
+                        placeholder,
+                    }) => {
+                        if let Some(ui) = ui.upgrade() {
+                            super::expressions::icon_done(
+                                state,
+                                &ui,
+                                picture,
+                                placeholder,
+                                &serde_json::Value::Null,
+                            );
+                        }
+                        return;
+                    }
                     Some(Pending::ExpressionLibrary { ui }) => {
                         if let Some(ui) = ui.upgrade() {
                             super::expressions::load_failed(&ui, err);
@@ -728,12 +744,21 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 }
                 Some(Pending::ExpressionLibrary { ui }) => {
                     if let Some(ui) = ui.upgrade() {
-                        super::expressions::fill_library(&ui, &result);
+                        super::expressions::fill_library(state, &ui, &result);
                     }
                 }
                 Some(Pending::ExpressionDownload { ui, package }) => {
                     if let Some(ui) = ui.upgrade() {
                         super::expressions::download_done(state, &ui, &package, Ok(&result));
+                    }
+                }
+                Some(Pending::ExpressionIcon {
+                    ui,
+                    picture,
+                    placeholder,
+                }) => {
+                    if let Some(ui) = ui.upgrade() {
+                        super::expressions::icon_done(state, &ui, &picture, &placeholder, &result);
                     }
                 }
                 Some(Pending::EmojiImages { view, text }) => {

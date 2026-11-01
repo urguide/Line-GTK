@@ -79,8 +79,11 @@ The sticker chooser now has separate **Stickers** and **Emoji** tabs. Its downlo
 button opens the account's full purchased/owned library (paginated, without the
 old 12-pack/48-image limits). Select packs or use **Download all**; completed packs
 are skipped, failed packs remain retryable, and **Stop queue** finishes the current
-pack before stopping. Opening the chooser downloads no entire packs. Existing
-downloaded sticker packs are retained. Purchase refresh and local download state
+pack before stopping. Opening the chooser downloads no entire packs.
+The download manager shows each pack's cover next to its name, including packs
+not yet downloaded. Covers load progressively and are cached separately from
+full packs; an unavailable cover leaves the name and download controls usable.
+Existing downloaded sticker packs are retained. Purchase refresh and local download state
 are separate; missing cache files make the pack available for download again.
 Emoji insert editable `[emoji:package:id]` tokens at the cursor with a live visual
 preview above the composer. Sending resolves these to LINE `REPLACE` and
@@ -161,6 +164,10 @@ Video cache reuse supports MP4, WebM, MOV, MKV and M4V originals, with their
 existing thumbnails. Both saved paths and legacy filename discovery validate
 nonempty regular files inside the media cache (including symlink resolution),
 so reopening a cached non-MP4 video does not request another download.
+Encrypted video downloads verify LINE's HMAC over SHA-256 hashes of 128 KiB
+ciphertext chunks before decryption, for both disk and memory-only chats.
+Older linejs videos with whole-ciphertext HMACs remain readable after verification;
+damaged downloads and incorrect keys are rejected before storing media.
 Image/video originals and thumbnails are stored under `cache/media/<chat MID>/`,
 using the group MID for groups and the peer MID for direct chats. Names start with
 the message's UTC timestamp and end with its ID, for example
