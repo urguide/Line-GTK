@@ -2,7 +2,7 @@
 Name=line-rust
 Comment=Native unofficial LINE client
 Exec=line-rust
-Icon=line-rust
+Icon=io.github.urguide.LineRust
 Terminal=false
 Type=Application
 Categories=Network;InstantMessaging;

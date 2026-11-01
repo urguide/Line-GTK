@@ -9,6 +9,11 @@ for required in \
   /protocol/line-rust-protocol \
   /assets/lang/eng.json \
   /assets/lang/thai.json \
+  /assets/icons/hicolor/48x48/apps/line-rust.png \
+  /assets/icons/hicolor/64x64/apps/line-rust.png \
+  /assets/icons/hicolor/128x128/apps/line-rust.png \
+  /assets/icons/hicolor/256x256/apps/line-rust.png \
+  /assets/icons/hicolor/scalable/apps/line-rust.svg \
   /io.github.urguide.LineRust.desktop
 do
   if ! grep -q "${required}$" <<<"$listing"; then

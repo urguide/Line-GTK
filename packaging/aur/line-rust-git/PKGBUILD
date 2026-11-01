@@ -67,8 +67,13 @@ package() {
 
   for size in 48x48 64x64 128x128 256x256; do
     install -Dm644 "assets/icons/hicolor/${size}/apps/line-rust.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}/apps/io.github.urguide.LineRust.png"
+    # Keep the legacy name for notification clients and existing launchers.
+    install -Dm644 "assets/icons/hicolor/${size}/apps/line-rust.png" \
       "$pkgdir/usr/share/icons/hicolor/${size}/apps/line-rust.png"
   done
+  install -Dm644 assets/icons/hicolor/scalable/apps/line-rust.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.urguide.LineRust.svg"
   install -Dm644 assets/icons/hicolor/scalable/apps/line-rust.svg \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/line-rust.svg"
 

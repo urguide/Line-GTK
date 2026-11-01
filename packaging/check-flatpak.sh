@@ -17,4 +17,12 @@ grep -q '^command=line-rust$' <<<"$metadata"
 test -x "$check_dir/checkout/files/bin/line-rust"
 test -x "$check_dir/checkout/files/share/line-rust/protocol/line-rust-protocol"
 
+desktop="$check_dir/checkout/files/share/applications/io.github.urguide.LineRust.desktop"
+grep -qx 'Icon=io.github.urguide.LineRust' "$desktop"
+grep -qx 'StartupWMClass=io.github.urguide.LineRust' "$desktop"
+for size in 48x48 64x64 128x128 256x256; do
+  test -s "$check_dir/checkout/files/share/icons/hicolor/$size/apps/io.github.urguide.LineRust.png"
+done
+test -s "$check_dir/checkout/files/share/icons/hicolor/scalable/apps/io.github.urguide.LineRust.svg"
+
 echo "flatpak smoke test passed: $bundle"

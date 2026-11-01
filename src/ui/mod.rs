@@ -41,9 +41,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 
+const APP_ID: &str = "io.github.urguide.LineRust";
+
 pub fn run(repo_root: PathBuf, data_dir: PathBuf) -> Result<()> {
     let app = Application::builder()
-        .application_id("io.github.urguide.LineRust")
+        .application_id(APP_ID)
         .flags(gio::ApplicationFlags::FLAGS_NONE)
         .build();
 
@@ -87,11 +89,11 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     let window = ApplicationWindow::builder()
         .application(app)
         .title(crate::i18n::t("app_title"))
-        .icon_name("line-rust")
+        .icon_name(APP_ID)
         .default_width(1180)
         .default_height(760)
         .build();
-    window.set_icon_name(Some("line-rust"));
+    window.set_icon_name(Some(APP_ID));
     window.set_size_request(WINDOW_MIN_W, WINDOW_MIN_H);
 
     let toast_overlay = libadwaita::ToastOverlay::new();
@@ -311,7 +313,9 @@ const WINDOW_MIN_W: i32 = 720;
 const WINDOW_MIN_H: i32 = 480;
 
 fn register_app_icons(repo_root: &std::path::Path) {
-    gtk::Window::set_default_icon_name("line-rust");
+    // Wayland shells resolve APP_ID.desktop and its installed Icon entry;
+    // process-local theme search paths cannot provide a shell/taskbar icon.
+    gtk::Window::set_default_icon_name(APP_ID);
     let icon_root = repo_root.join("assets/icons");
     if !icon_root.is_dir() {
         return;

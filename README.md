@@ -257,6 +257,20 @@ cd line-rust/aur
 makepkg -si
 ```
 
+### Taskbar icons (Wayland / X11)
+
+Wayland shells match `io.github.urguide.LineRust` to the installed
+`io.github.urguide.LineRust.desktop` and its namespaced icon. Arch and Flatpak
+packages install these together. X11 windows additionally supply the bundled L
+artwork directly via `_NET_WM_ICON`.
+
+After upgrading, fully quit and reopen the app. If an old icon remains, check
+for user-local desktop entries/icons under `~/.local/share/applications` and
+`~/.local/share/icons` (or `$XDG_DATA_HOME`), which can override system files.
+Remove the old taskbar pin and pin the newly installed app if it still points
+to LINE GTK. Direct source/tarball execution on Wayland also requires installing
+the desktop entry and icons; changing GTK's in-process icon theme is insufficient.
+
 ## Install (Flatpak bundle)
 Download the matching `x86_64` or `aarch64` (ARM64) bundle from
 [this fork's releases](https://github.com/urguide/line-rust/releases).

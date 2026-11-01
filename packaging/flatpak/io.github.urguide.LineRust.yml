@@ -25,7 +25,6 @@ modules:
       - install -d /app/share/line-rust
       - cp -a protocol assets /app/share/line-rust/
       - install -Dm644 io.github.urguide.LineRust.desktop /app/share/applications/io.github.urguide.LineRust.desktop
-      - sed -i 's/^Icon=.*/Icon=io.github.urguide.LineRust/' /app/share/applications/io.github.urguide.LineRust.desktop
       - install -Dm644 assets/icons/hicolor/48x48/apps/line-rust.png /app/share/icons/hicolor/48x48/apps/io.github.urguide.LineRust.png
       - install -Dm644 assets/icons/hicolor/64x64/apps/line-rust.png /app/share/icons/hicolor/64x64/apps/io.github.urguide.LineRust.png
       - install -Dm644 assets/icons/hicolor/128x128/apps/line-rust.png /app/share/icons/hicolor/128x128/apps/io.github.urguide.LineRust.png
