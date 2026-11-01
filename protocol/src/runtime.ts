@@ -1,14 +1,9 @@
 /** Narrow protocol process: authentication, LINE RPC, events and call wire transport. */
-import {
-  Client,
-  loginWithAuthToken,
-  loginWithQR,
-  TalkMessage,
-} from "@evex/linejs";
+import { Client, loginWithAuthToken, loginWithQR } from "@evex/linejs";
 import { FileStorage } from "@evex/linejs/storage";
 import { AuthStore, type LineDevice } from "./auth.ts";
 import { createApi } from "./api.ts";
-import { packRaw } from "./raw_codec.ts";
+import { attachLive, errorReport } from "./live.ts";
 import * as calls from "./calls.ts";
 import { unsendFromOperation } from "./events.ts";
 
@@ -28,6 +23,7 @@ const transfer = `${data}/cache/transfer`;
 const auth = new AuthStore(protocolData);
 const storage = new FileStorage(`${protocolData}/linejs-storage.json`);
 let client: Client | null = null;
+let stopLive: (() => void) | null = null;
 function emit(value: Json) {
   worker.postMessage(value);
 }
@@ -61,35 +57,30 @@ const device =
 const version = Deno.env.get("LINE_VERSION") || "26.6.2";
 
 async function connected(next: Client, loginDevice: LineDevice) {
+  const profile = await next.getMyProfile();
+  stopLive?.();
   client = next;
   await auth.save(next.authToken, loginDevice);
-  const profile = await next.getMyProfile();
   event("core_session", { ...profile });
-  next.on("message", (message) => {
-    const raw = (message as TalkMessage).raw;
-    const to = String(raw.to ?? "");
-    const chatMid = to.startsWith("c") || to.startsWith("r")
-      ? to
-      : raw.from === profile.mid
-      ? to
-      : String(raw.from);
-    event("message", {
-      chatMid,
-      message: { decodedMessage: packRaw(raw), rawMessage: packRaw(raw) },
-    });
-  });
+  const live = attachLive(next, profile.mid, () => client === next, event);
+  stopLive = live.stop;
   next.on("event", (op) => {
-    const unsent = unsendFromOperation(op);
-    if (unsent) event("message_unsent", unsent);
-    else if (String(op.type) === "NOTIFIED_READ_MESSAGE") {
-      event("read_receipt", { chatMid: op.param1, messageId: op.param3 });
-    } else if (/CONTACT|FRIEND|PROFILE/.test(String(op.type))) {
-      event("catalog_invalidated");
+    if (client !== next) return;
+    try {
+      const unsent = unsendFromOperation(op);
+      if (unsent) event("message_unsent", unsent);
+      else if (String(op.type) === "NOTIFIED_READ_MESSAGE") {
+        event("read_receipt", { chatMid: op.param1, messageId: op.param3 });
+      } else if (/CONTACT|FRIEND|PROFILE/.test(String(op.type))) {
+        event("catalog_invalidated");
+      }
+    } catch (error) {
+      event("protocol_error", errorReport(error, "live_event"));
     }
   });
   next.on("call:incoming", calls.handleIncomingCall);
   next.on("call:cancel", calls.handleCallCancel);
-  next.listen({ talk: true, square: false });
+  live.start();
   return profile;
 }
 
@@ -126,7 +117,13 @@ async function handle(request: Json) {
         break;
       }
       case "logout":
+      case "end_session":
         client = null;
+        try {
+          stopLive?.();
+        } finally {
+          stopLive = null;
+        }
         await auth.clear();
         await storage.clear();
         ok(id);
@@ -154,13 +151,13 @@ async function handle(request: Json) {
         throw new Error(`unknown_method:${method}`);
     }
   } catch (error) {
+    event("protocol_error", errorReport(error, "request"));
     fail(id, error);
   }
 }
 globalThis.addEventListener("unhandledrejection", (e) => {
   e.preventDefault();
-  event("session_failed", { error: String(e.reason) });
-  client = null;
+  event("protocol_error", errorReport(e.reason, "unhandledrejection"));
 });
 const token = await auth.loadToken();
 event("ready", { hasAuth: !!token });
@@ -173,6 +170,7 @@ if (token) {
     );
     event("session", { ...profile });
   } catch (error) {
+    event("protocol_error", errorReport(error, "boot_restore"));
     event("session_failed", { error: String(error) });
   }
 }

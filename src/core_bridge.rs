@@ -22,6 +22,9 @@ type Replies = Arc<Mutex<HashMap<u64, mpsc::SyncSender<Response>>>>;
 
 #[derive(Clone)]
 pub struct CoreBridge {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    events: Sender<ProtocolEvent>,
+    failed_generation: Arc<AtomicU64>,
     pub audio: crate::call_audio::AudioHost,
     data: PathBuf,
     pub commands: mpsc::Sender<CoreCommand>,
@@ -61,11 +64,11 @@ impl CoreBridge {
         let replies = Arc::new(Mutex::new(HashMap::new()));
         let (tx, rx) = mpsc::channel();
         let ipc = Ipc {
-            stdin,
+            stdin: stdin.clone(),
             replies: replies.clone(),
             ids,
             generation: generation.clone(),
-            events,
+            events: events.clone(),
             data: data.to_owned(),
             asset_at: Mutex::new(None),
         };
@@ -74,6 +77,9 @@ impl CoreBridge {
             .name("line-rust-core".into())
             .spawn(move || engine.run(rx))?;
         Ok(Self {
+            stdin,
+            events,
+            failed_generation: Arc::new(AtomicU64::new(0)),
             audio: Default::default(),
             data: data.to_owned(),
             commands: tx,
@@ -100,6 +106,66 @@ impl CoreBridge {
             return true;
         }
         match response.event.as_deref() {
+            Some("protocol_error") => {
+                let code = response.extra["code"].as_str().unwrap_or_default();
+                let error = response.extra["error"].as_str().unwrap_or("protocol error");
+                if line_gtk_core::session::authentication_failure(code)
+                    || line_gtk_core::session::authentication_failure(error)
+                {
+                    if self.failed_generation.swap(generation, Ordering::SeqCst) != generation {
+                        // Invalidate queued and in-flight core work immediately,
+                        // rather than waiting for Session to reach the worker.
+                        let ended_generation = generation.wrapping_add(1);
+                        if self
+                            .generation
+                            .compare_exchange(
+                                generation,
+                                ended_generation,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            )
+                            .is_err()
+                        {
+                            return true;
+                        }
+                        self.audio.stop();
+                        let _ = self.commands.send(CoreCommand::Session {
+                            account: String::new(),
+                            generation: ended_generation,
+                        });
+                        // Direct control request: do not queue behind a blocked media RPC.
+                        if let Ok(mut input) = self.stdin.lock()
+                            && let Some(input) = input.as_mut()
+                        {
+                            let _ =
+                                writeln!(input, "{{\"method\":\"end_session\",\"params\":{{}}}}");
+                            let _ = input.flush();
+                        }
+                        if let Ok(mut waiters) = self.replies.lock() {
+                            for (id, waiter) in waiters.drain() {
+                                let _ = waiter.send(Response {
+                                    id: Some(id),
+                                    ok: Some(false),
+                                    result: None,
+                                    error: Some("session_changed".into()),
+                                    event: None,
+                                    extra: Value::Null,
+                                });
+                            }
+                        }
+                        let _ = self.events.send_blocking(ProtocolEvent::SessionFailed {
+                            error: "LOGGED_OUT: LINE session authorization expired".into(),
+                        });
+                    }
+                } else {
+                    // Avoid logging arbitrary decoder exception data/key material.
+                    tracing::warn!(
+                        source = response.extra["source"].as_str().unwrap_or("protocol"),
+                        "recoverable protocol error; session retained"
+                    );
+                }
+                return true;
+            }
             Some("host_audio_start") => {
                 if let Err(error) = self.audio.start(
                     &self.data.join("protocol-state/audio.sock"),
@@ -121,6 +187,7 @@ impl CoreBridge {
                 });
             }
             Some("session" | "core_session") => {
+                self.failed_generation.store(0, Ordering::SeqCst);
                 if let Some(account) = response.extra["mid"].as_str() {
                     let _ = self.commands.send(CoreCommand::Session {
                         account: account.into(),
@@ -132,6 +199,9 @@ impl CoreBridge {
                 }
             }
             Some("message") => {
+                if self.failed_generation.load(Ordering::SeqCst) == generation {
+                    return true;
+                }
                 let row = &response.extra["message"];
                 let chat = response.extra["chatMid"].as_str().unwrap_or_default();
                 if !chat.is_empty() {
@@ -527,6 +597,79 @@ impl Ipc {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+    #[test]
+    fn recoverable_protocol_errors_keep_live_messages_but_auth_failure_stops_session_once() {
+        let (commands, rx) = mpsc::channel();
+        let (events, ui) = async_channel::unbounded();
+        let mut child = Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let bridge = CoreBridge {
+            audio: Default::default(),
+            data: PathBuf::new(),
+            commands,
+            replies: Arc::default(),
+            generation: Arc::new(AtomicU64::new(1)),
+            stdin: Arc::new(Mutex::new(child.stdin.take())),
+            events,
+            failed_generation: Arc::new(AtomicU64::new(0)),
+        };
+        let report = |code: &str, error: &str| Response {
+            id: None,
+            ok: None,
+            result: None,
+            error: None,
+            event: Some("protocol_error".into()),
+            extra: json!({"code":code,"error":error,"source":"test"}),
+        };
+        assert!(bridge.route(&report("", "decode failed"), 1));
+        assert!(rx.try_recv().is_err());
+        assert!(ui.try_recv().is_err());
+        let live = Response {
+            id: None,
+            ok: None,
+            result: None,
+            error: None,
+            event: Some("message".into()),
+            extra: json!({"chatMid":"u1","message":{"id":"2","text":"still receiving"}}),
+        };
+        assert!(bridge.route(&live, 1));
+        assert!(matches!(rx.try_recv().unwrap(), CoreCommand::Live { .. }));
+        let (waiter, pending) = mpsc::sync_channel(1);
+        bridge.replies.lock().unwrap().insert(99, waiter);
+        bridge.route(&report("NOT_AUTHORIZED_DEVICE", "request failed"), 1);
+        assert_eq!(bridge.generation.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            pending
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .error
+                .as_deref(),
+            Some("session_changed")
+        );
+        assert!(
+            matches!(rx.try_recv().unwrap(),CoreCommand::Session{account,generation:2} if account.is_empty())
+        );
+        assert!(matches!(
+            ui.try_recv().unwrap(),
+            ProtocolEvent::SessionFailed { .. }
+        ));
+        let mut line = String::new();
+        BufReader::new(stdout).read_line(&mut line).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&line).unwrap()["method"],
+            "end_session"
+        );
+        bridge.route(&report("LOGGED_OUT", "request failed"), 1);
+        bridge.route(&live, 1);
+        assert!(rx.try_recv().is_err());
+        assert!(ui.try_recv().is_err());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 
     #[test]
     fn downloaded_original_survives_thumbnail_failure_and_cached_reopen() {

@@ -3,6 +3,7 @@ import { Client, TalkMessage } from "@evex/linejs";
 import { coerceI64 } from "./messages.ts";
 import { packRaw, unpackRaw } from "./raw_codec.ts";
 import { Buffer } from "node:buffer";
+import { takeDecodeEnvelope } from "./live.ts";
 
 type Json = Record<string, unknown>;
 export function createApi(
@@ -63,11 +64,13 @@ export function createApi(
           const rawMessage = packRaw(message);
           try {
             const tm = await decode(message, c);
-            messages.push({
-              decodedMessage: packRaw(tm.raw),
-              rawMessage,
-              decodeError: null,
-            });
+            messages.push(
+              takeDecodeEnvelope(tm.raw) ?? {
+                decodedMessage: packRaw(tm.raw),
+                rawMessage,
+                decodeError: null,
+              },
+            );
           } catch {
             // Do not expose decoder exception text (it may contain key material).
             // Rust owns fallback text, presentation and persistence decisions.
@@ -209,6 +212,9 @@ export function createApi(
           >[0],
           c,
         );
+        if (takeDecodeEnvelope(tm.raw)?.decodeError) {
+          throw new Error("message_decode_failed");
+        }
         const blob = await tm.getData(false);
         const name = `${crypto.randomUUID()}.part`;
         const path = transferPath(name);

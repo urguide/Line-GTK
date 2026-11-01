@@ -128,6 +128,11 @@ data or a fixed error code plus the original wire metadata. Rust preserves a
 safe fallback row in SQLite, shows an unavailable-message label for encrypted
 content, and keeps the page cursor advancing. Failed encrypted media is not
 automatically downloaded; a later successful decode can replace the fallback.
+Live decode and event failures are reported to Rust without clearing the client.
+Per-message decoder failures produce the same fallback envelope and leave the
+polling loop able to deliver the next message. Rust terminates the session only
+for recognized authentication/logout codes, stops audio, aborts pending RPCs,
+and directs the adapter to stop listening and clear authentication state.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends

@@ -595,11 +595,7 @@ impl<T: Transport> Engine<T> {
                 generation,
             } => {
                 self.valid(generation)?;
-                if let Some(raw) = message.get("decodedMessage") {
-                    let mut normalized = crate::message::normalize(raw, &self.account);
-                    normalized["rawMessage"] = message["rawMessage"].clone();
-                    message = normalized;
-                }
+                message = crate::message::from_envelope(&message, &self.account);
                 self.store
                     .save_messages(&chat, std::slice::from_ref(&message))?;
                 self.store.invalidate(&chat)?;
