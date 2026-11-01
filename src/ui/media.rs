@@ -28,6 +28,7 @@ pub(super) fn update_memory_viewport(state: &AppState) {
                 visible.insert(id.clone());
             }
         }
+        visible.extend(super::replies::visible_media(state, height));
     }
     let previous = state.memory_visible.borrow().clone();
     if previous == visible {
@@ -59,6 +60,7 @@ pub(super) fn update_memory_viewport(state: &AppState) {
             placeholder.add_css_class("line-media-placeholder");
             bubble.append(&placeholder);
         }
+        super::replies::release_media(state, id);
     }
     *state.memory_visible.borrow_mut() = visible.clone();
     let _ = state
@@ -1236,6 +1238,7 @@ pub(super) fn send_local_image_file(state: &AppState, path: &std::path::Path) ->
                 id,
                 &chat_mid,
                 MessageInfo {
+                    mentioned_mids: Vec::new(),
                     id: String::new(),
                     text: "[Image]".into(),
                     related_message_id: None,

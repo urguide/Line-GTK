@@ -3,6 +3,25 @@ use serde_json::json;
 use std::path::Path;
 
 #[test]
+fn direct_mentions_survive_normalization_but_all_and_malformed_metadata_do_not() {
+    let entries = json!({"MENTIONEES":[
+        {"S":"0","E":"3","M":"me"}, {"M":"me"}, {"M":"other"},
+        {"A":"1"}, {"A":true,"M":"all"}, {"A":1,"M":"all"}, {"M":""}
+    ]});
+    for mention in [entries.clone(), json!(entries.to_string())] {
+        let row = normalize(&json!({"contentMetadata":{"MENTION":mention}}), "me");
+        assert_eq!(row["mentionedMids"], json!(["me", "other"]));
+    }
+    for mention in [json!("not json"), json!(null), json!({"MENTIONEES":"me"})] {
+        let row = normalize(
+            &json!({"text":"@me @all", "contentMetadata":{"MENTION":mention}}),
+            "me",
+        );
+        assert_eq!(row["mentionedMids"], json!([]));
+    }
+}
+
+#[test]
 fn reply_media_and_flex_are_interpreted_in_rust() {
     let row = normalize(
         &json!({"id":"9007199254740993","from":"me","to":"group","createdTime":"42","contentType":2,"relatedMessageId":"9007199254740992","messageRelationType":"REPLY","contentMetadata":{"FILE_NAME":"video.mp4","DURATION":"3000"}}),

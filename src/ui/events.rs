@@ -390,6 +390,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     meta.file_path = Some(fp.clone());
                 }
             }
+            super::replies::media_ready(state, &message_id, &image_path, file_path.as_deref());
             if let Some(path) = audio_path {
                 if std::path::Path::new(&path).exists() {
                     attach_audio_to_slot(state, &message_id, &path);
@@ -536,6 +537,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::ReplyOriginal {
+                message_id,
+                generation,
+            }) = pending.as_ref()
+            {
+                super::replies::response(state, message_id, *generation, ok, &result);
+                return;
+            }
             if let Some(Pending::SenderProfile { mid, generation }) = pending.as_ref() {
                 senders::response(state, mid, *generation, ok, &result);
                 return;
@@ -661,7 +670,11 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 return;
             }
             match pending {
-                Some(Pending::ChatMembers { .. } | Pending::SenderProfile { .. }) => {
+                Some(
+                    Pending::ChatMembers { .. }
+                    | Pending::SenderProfile { .. }
+                    | Pending::ReplyOriginal { .. },
+                ) => {
                     unreachable!("profile responses handled above")
                 }
                 Some(Pending::Notes { .. }) => unreachable!("notes responses handled above"),
@@ -794,6 +807,16 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                                 meta.audio_path = Some(path.to_string());
                             }
                         }
+                        super::replies::media_ready(
+                            state,
+                            &message_id,
+                            if content_type.eq_ignore_ascii_case("image") {
+                                path
+                            } else {
+                                ""
+                            },
+                            Some(path),
+                        );
                         finish_media_action(state, &action, path, &suggest_name, &content_type);
                     } else {
                         toast(state, &crate::i18n::t("media_download_failed"));

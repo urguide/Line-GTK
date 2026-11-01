@@ -314,6 +314,7 @@ impl Sidecar {
                 | "list_friends"
                 | "profile_avatar"
                 | "sender_profile"
+                | "reply_original"
                 | "list_stickers"
                 | "expression_library"
                 | "download_expression"

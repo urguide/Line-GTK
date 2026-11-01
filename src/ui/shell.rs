@@ -1058,6 +1058,11 @@ pub fn load_css() {
             min-height: 1px;
             background: alpha(@borders, 0.55);
         }
+        .line-time-gap {
+            min-height: 1px;
+            background: alpha(#888888, 0.28);
+            margin: 10px 8px;
+        }
         .line-new-sep-badge {
             font-size: 0.72em;
             font-weight: 700;

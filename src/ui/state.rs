@@ -85,7 +85,8 @@ pub(super) struct AppState {
     pub media_msgs: Rc<RefCell<HashMap<String, MessageInfo>>>,
     pub receipt_slots: Rc<RefCell<HashMap<String, gtk::Label>>>,
     pub msg_created: Rc<RefCell<HashMap<String, i64>>>,
-    pub last_msg_day: Rc<RefCell<Option<String>>>,
+    pub message_layout: Rc<RefCell<super::messages::MessageLayout>>,
+    pub reply_ui: Rc<RefCell<super::replies::ReplyUi>>,
     pub seen_msg_ids: Rc<RefCell<HashSet<String>>>,
     pub unsent_msg_ids: Rc<RefCell<HashSet<String>>>,
     pub message_rows: Rc<RefCell<HashMap<String, gtk::ListBoxRow>>>,
@@ -135,7 +136,7 @@ pub(super) struct AppState {
     pub emoji_catalog: Rc<RefCell<serde_json::Value>>,
     pub expression_catalogs: Rc<RefCell<HashMap<String, serde_json::Value>>>,
     pub expression_downloads: Rc<RefCell<serde_json::Value>>,
-    pub expression_picker_kind: Rc<RefCell<String>>,
+    pub expression_panels: Rc<RefCell<HashMap<String, gtk::Box>>>,
     pub expression_thumbs: Rc<RefCell<super::expressions::ThumbCache>>,
     pub call_btn: gtk::Button,
     pub mute_btn: gtk::Button,
@@ -179,10 +180,15 @@ pub(super) struct PendingNotif {
     pub title: String,
     pub body: String,
     pub avatar_path: Option<String>,
+    pub directly_mentioned: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    ReplyOriginal {
+        message_id: String,
+        generation: u64,
+    },
     SenderProfile {
         mid: String,
         generation: u64,

@@ -86,11 +86,35 @@ pub fn normalize(raw: &Value, account: &str) -> Value {
         "imageUrl":meta["PREVIEW_URL"].as_str().or_else(||meta["DOWNLOAD_URL"].as_str()),
         "stickerId":meta["STKID"],"stickerPackageId":meta["STKPKGID"],"stickerVersion":meta["STKVER"],
         "emojis":crate::expressions::resources(meta),
+        "mentionedMids":mentioned_mids(meta),
         "durationMs":integer(&meta["DURATION"]),
         "relatedMessageId":if relation{raw["relatedMessageId"].as_str()}else{None},
         "flex":if content_type=="FLEX"{flex(meta)}else{Value::Null},
         "needsMedia":matches!(content_type,"IMAGE"|"VIDEO"|"AUDIO"|"STICKER"),
     })
+}
+
+/// Only explicit user mentions count; LINE's @all entry uses A rather than M.
+pub fn mentioned_mids(meta: &Value) -> Vec<String> {
+    let mention = match &meta["MENTION"] {
+        Value::String(raw) => serde_json::from_str(raw).unwrap_or(Value::Null),
+        value => value.clone(),
+    };
+    let mut mids = Vec::new();
+    for entry in mention["MENTIONEES"].as_array().into_iter().flatten() {
+        if matches!(&entry["A"], Value::Bool(true))
+            || matches!(entry["A"].as_str(), Some("1" | "true"))
+            || entry["A"] == 1
+        {
+            continue;
+        }
+        if let Some(mid) = entry["M"].as_str().filter(|mid| !mid.is_empty())
+            && !mids.iter().any(|existing| existing == mid)
+        {
+            mids.push(mid.to_owned());
+        }
+    }
+    mids
 }
 
 pub fn string(value: &Value) -> String {

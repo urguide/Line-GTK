@@ -20,7 +20,12 @@ pub(super) fn clear_slots(state: &AppState) {
     state.sender_ui.borrow_mut().slots.clear();
 }
 
-pub(super) fn append(state: &AppState, msg: &MessageInfo, outer: &gtk::Box, content: &gtk::Box) {
+pub(super) fn append(
+    state: &AppState,
+    msg: &MessageInfo,
+    outer: &gtk::Box,
+    content: &gtk::Box,
+) -> Option<(gtk::Widget, gtk::Widget)> {
     if msg.mine
         || msg.from.is_empty()
         || !state
@@ -29,7 +34,7 @@ pub(super) fn append(state: &AppState, msg: &MessageInfo, outer: &gtk::Box, cont
             .as_deref()
             .is_some_and(|mid| mid.starts_with(['c', 'r']))
     {
-        return;
+        return None;
     }
 
     let profile = state
@@ -103,7 +108,9 @@ pub(super) fn append(state: &AppState, msg: &MessageInfo, outer: &gtk::Box, cont
             .profiles
             .insert(msg.from.clone(), profile);
     }
-    outer.append(&avatar);
+    let gutter = gtk::Box::builder().width_request(36).build();
+    gutter.append(&avatar);
+    outer.append(&gutter);
     content.append(&label);
     state
         .sender_ui
@@ -136,6 +143,7 @@ pub(super) fn append(state: &AppState, msg: &MessageInfo, outer: &gtk::Box, cont
             },
         );
     }
+    Some((avatar.upcast(), label.upcast()))
 }
 
 pub(super) fn response(

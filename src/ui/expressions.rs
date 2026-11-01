@@ -21,9 +21,13 @@ pub(super) fn open_library(state: &AppState, kind: &str) {
     if !*state.session_ready.borrow() {
         return;
     }
-    if let Some(ui) = state.expression_ui.borrow().as_ref() {
-        ui.window.present();
-        return;
+    let existing = state.expression_ui.borrow().clone();
+    if let Some(ui) = existing {
+        if ui.kind == kind {
+            ui.window.present();
+            return;
+        }
+        ui.window.close();
     }
     let window = libadwaita::Window::builder()
         .transient_for(&state.window)
@@ -147,6 +151,7 @@ pub(super) fn close(state: &AppState) {
         ui.window.close();
     }
     state.sticker_popover.popdown();
+    state.expression_panels.borrow_mut().clear();
 }
 
 pub(super) fn wire_composer_preview(state: &AppState) {
@@ -399,10 +404,7 @@ pub(super) fn catalog_ready(state: &AppState, kind: &str, result: &Value) {
     }
     let changed = state.expression_catalogs.borrow().get(kind) != Some(result);
     cache_catalog(state, kind, result);
-    if changed
-        && state.sticker_popover.is_visible()
-        && *state.expression_picker_kind.borrow() == kind
-    {
+    if changed && state.sticker_popover.is_visible() {
         fill_sticker_popover(state, result, kind);
     }
 }

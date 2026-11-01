@@ -411,6 +411,21 @@ impl<T: Transport> Engine<T> {
                 }
                 let result = (|| {
                     self.valid(generation)?;
+                    if method == "reply_original" {
+                        let chat = params["chatMid"].as_str().context("missing chat ID")?;
+                        let id = params["messageId"].as_str().context("missing message ID")?;
+                        let mut message = self.store.message(chat, id)?;
+                        if self.transport.memory_media(&self.account, chat)
+                            && let Some(row) = message.as_mut()
+                            && matches!(row["contentType"].as_str(), Some("IMAGE" | "VIDEO"))
+                        {
+                            row["imagePath"] = Value::Null;
+                            row["filePath"] = Value::Null;
+                        }
+                        // A quote only reads the original cache entry. Never materialize
+                        // media under the replying message's ID or refresh its cache age.
+                        return Ok(json!({"message":message}));
+                    }
                     if matches!(
                         method.as_str(),
                         "expression_local"

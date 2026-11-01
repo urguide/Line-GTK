@@ -109,6 +109,8 @@ pub struct MessageInfo {
     pub flex: Option<FlexInfo>,
     #[serde(default)]
     pub emojis: Vec<serde_json::Value>,
+    #[serde(rename = "mentionedMids", default)]
+    pub mentioned_mids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

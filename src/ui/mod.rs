@@ -13,6 +13,7 @@ mod mentions;
 mod messages;
 mod notes;
 mod notifications;
+mod replies;
 mod senders;
 mod settings;
 mod shell;
@@ -180,7 +181,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         media_msgs: Rc::new(RefCell::new(HashMap::new())),
         receipt_slots: Rc::new(RefCell::new(HashMap::new())),
         msg_created: Rc::new(RefCell::new(HashMap::new())),
-        last_msg_day: Rc::new(RefCell::new(None)),
+        message_layout: Rc::new(RefCell::new(Default::default())),
+        reply_ui: Rc::new(RefCell::new(Default::default())),
         seen_msg_ids: Rc::new(RefCell::new(HashSet::new())),
         unsent_msg_ids: Rc::new(RefCell::new(HashSet::new())),
         message_rows: Rc::new(RefCell::new(HashMap::new())),
@@ -230,7 +232,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         emoji_catalog: Rc::new(RefCell::new(serde_json::Value::Null)),
         expression_catalogs: Rc::new(RefCell::new(HashMap::new())),
         expression_downloads: Rc::new(RefCell::new(serde_json::Value::Null)),
-        expression_picker_kind: Rc::new(RefCell::new(String::new())),
+        expression_panels: Rc::new(RefCell::new(HashMap::new())),
         expression_thumbs: Rc::new(RefCell::new(Default::default())),
         call_btn: shell.call_btn,
         mute_btn: shell.mute_btn,
@@ -1040,6 +1042,7 @@ fn send_current(state: &AppState) {
                 id,
                 &chat_mid,
                 MessageInfo {
+                    mentioned_mids: Vec::new(),
                     id: String::new(),
                     text: display_text,
                     related_message_id,
@@ -1099,6 +1102,7 @@ fn remove_pending_placeholder(state: &AppState, placeholder_id: &str) {
     state.media_msgs.borrow_mut().remove(placeholder_id);
     state.receipt_slots.borrow_mut().remove(placeholder_id);
     state.msg_created.borrow_mut().remove(placeholder_id);
+    messages::remove_message_layout(state, placeholder_id);
 }
 
 fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg: MessageInfo) {

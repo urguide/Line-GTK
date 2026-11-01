@@ -1,6 +1,6 @@
 use super::{
-    AppState, PendingNotif, chat_is_muted, chat_memory_media, notifications_allowed,
-    preview_body_ui,
+    AppState, PendingNotif, chat_is_hidden, chat_is_muted, chat_memory_media,
+    notifications_allowed, preview_body_ui,
 };
 use crate::desktop_notify::ChatNotification;
 use crate::protocol::MessageInfo;
@@ -12,7 +12,10 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
     if !notifications_allowed(state) {
         return;
     }
-    if chat_is_muted(state, peer_mid) {
+    let directly_mentioned = state.self_mid.borrow().as_deref().is_some_and(|mid| {
+        !mid.is_empty() && msg.mentioned_mids.iter().any(|mentioned| mentioned == mid)
+    });
+    if !chat_alert_allowed(state, peer_mid, directly_mentioned) {
         return;
     }
     let (name, avatar_path) = state
@@ -42,6 +45,7 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
                 title: name.clone(),
                 body: body.clone(),
                 avatar_path: avatar_path.clone(),
+                directly_mentioned,
             },
         );
     }
@@ -71,7 +75,7 @@ pub(super) fn refresh_notification_media(state: &AppState, message_id: &str, ima
     let Some(meta) = state.notif_pending.borrow().get(message_id).cloned() else {
         return;
     };
-    if chat_is_muted(state, &meta.chat_mid) {
+    if !chat_alert_allowed(state, &meta.chat_mid, meta.directly_mentioned) {
         return;
     }
     let viewing = state.current_chat.borrow().as_deref() == Some(meta.chat_mid.as_str());
@@ -92,6 +96,18 @@ pub(super) fn refresh_notification_media(state: &AppState, message_id: &str, ima
             suppress_sound: true,
         },
     );
+}
+
+fn chat_alert_allowed(state: &AppState, mid: &str, directly_mentioned: bool) -> bool {
+    allows_chat_alert(
+        chat_is_hidden(state, mid),
+        chat_is_muted(state, mid),
+        directly_mentioned,
+    )
+}
+
+fn allows_chat_alert(hidden: bool, muted: bool, directly_mentioned: bool) -> bool {
+    directly_mentioned || !(hidden || muted)
 }
 
 fn send_desktop_notification(state: &AppState, request: ChatNotification<'_>) {
@@ -235,4 +251,48 @@ fn play_system_sound_file(path: &Path, volume: f64) -> bool {
         .stderr(std::process::Stdio::null())
         .spawn()
         .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_and_muted_chats_require_a_direct_mention() {
+        for (hidden, muted) in [(false, false), (true, false), (false, true), (true, true)] {
+            for (metadata, expected_mention) in [
+                (serde_json::json!({}), false),
+                (
+                    serde_json::json!({"MENTION":{"MENTIONEES":[{"A":"1"}]}}),
+                    false,
+                ),
+                (
+                    serde_json::json!({"MENTION":{"MENTIONEES":[{"M":"other"}]}}),
+                    false,
+                ),
+                (
+                    serde_json::json!({"MENTION":{"MENTIONEES":[{"M":"me"}]}}),
+                    true,
+                ),
+                (
+                    serde_json::json!({"MENTION":{"MENTIONEES":[{"A":"1"},{"M":"me"}]}}),
+                    true,
+                ),
+            ] {
+                let row = line_rust_core::message::normalize(
+                    &serde_json::json!({
+                        "contentMetadata":metadata,
+                    }),
+                    "me",
+                );
+                let msg: MessageInfo = serde_json::from_value(row).unwrap();
+                let mentioned = msg.mentioned_mids.iter().any(|mid| mid == "me");
+                assert_eq!(mentioned, expected_mention);
+                assert_eq!(
+                    allows_chat_alert(hidden, muted, mentioned),
+                    expected_mention || !(hidden || muted)
+                );
+            }
+        }
+    }
 }

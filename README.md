@@ -75,8 +75,9 @@ Ownership rejection removes the matching recent sticker and deletes ownership
 snapshots atomically for that account, preventing stale catalog fallback from
 restoring rejected ownership. Failed sends never persist a successful message.
 
-The sticker chooser now has separate **Stickers** and **Emoji** tabs. Its download
-button opens the account's full purchased/owned library (paginated, without the
+The expression chooser shows **Stickers** on the left and **Emoji** on the right,
+with both grids visible immediately. Each panel has its own download button,
+which opens the account's full purchased/owned library (paginated, without the
 old 12-pack/48-image limits). Select packs or use **Download all**; completed packs
 are skipped, failed packs remain retryable, and **Stop queue** finishes the current
 pack before stopping. Opening the chooser downloads no entire packs.
@@ -101,6 +102,14 @@ preview above the composer. Sending resolves these to LINE `REPLACE` and
 `STICON_OWNERSHIP` metadata using UTF-16 offsets; received emoji render inline with
 text. Emoji currently use their static PNG assets. Downloads are stored in the
 application's sticker cache, including emoji under `cache/stickers/emoji/`.
+
+Hidden and muted chats only alert for an explicit mention of the signed-in user;
+`@all` does not override either setting. Global notification settings still apply.
+Consecutive messages from one sender share the first message's avatar and name.
+A gap of at least 20 minutes starts a new block with a subtle gray separator.
+Image/video reply previews reference the original message's cached media, including
+originals outside the loaded history page. Quotes do not create another media file
+or download a replacement; unavailable or withdrawn originals show `無法讀取`.
 
 All retention modes share `core/src/cache_policy.rs`; changes in Settings are
 sent immediately to the Rust worker and rechecked on subsequent requests.

@@ -1,5 +1,75 @@
 use super::*;
 
+#[derive(Default)]
+pub(super) struct MessageLayout {
+    rows: Vec<LayoutRow>,
+}
+
+struct LayoutRow {
+    id: String,
+    from: String,
+    mine: bool,
+    time: i64,
+    day: gtk::Label,
+    gap: gtk::Separator,
+    identity: Option<(gtk::Widget, gtk::Widget)>,
+}
+
+fn seconds(time: i64) -> i64 {
+    if time > 1_000_000_000_000 {
+        time / 1000
+    } else {
+        time
+    }
+}
+
+fn message_boundary(
+    previous: Option<(&str, bool, i64)>,
+    from: &str,
+    mine: bool,
+    time: i64,
+) -> (bool, bool) {
+    let Some((sender, was_mine, last_time)) = previous else {
+        return (false, false);
+    };
+    let gap =
+        last_time > 0 && time > 0 && seconds(time).saturating_sub(seconds(last_time)) >= 20 * 60;
+    let consecutive = !from.is_empty() && sender == from && was_mine == mine && !gap;
+    (consecutive, gap)
+}
+
+fn update_layout_row(previous: Option<&LayoutRow>, row: &LayoutRow) {
+    let (consecutive, gap) = message_boundary(
+        previous.map(|p| (p.from.as_str(), p.mine, p.time)),
+        &row.from,
+        row.mine,
+        row.time,
+    );
+    let new_day = row.time > 0 && previous.is_none_or(|p| day_key(p.time) != day_key(row.time));
+    row.day.set_visible(new_day);
+    row.gap.set_visible(gap);
+    if let Some((avatar, name)) = &row.identity {
+        avatar.set_visible(!consecutive || new_day);
+        name.set_visible(!consecutive || new_day);
+    }
+}
+
+fn refresh_message_layout(state: &AppState) {
+    let layout = state.message_layout.borrow();
+    for (index, row) in layout.rows.iter().enumerate() {
+        update_layout_row(index.checked_sub(1).map(|i| &layout.rows[i]), row);
+    }
+}
+
+pub(super) fn remove_message_layout(state: &AppState, id: &str) {
+    state
+        .message_layout
+        .borrow_mut()
+        .rows
+        .retain(|r| r.id != id);
+    refresh_message_layout(state);
+}
+
 pub(super) fn load_older_messages(state: &AppState) {
     if *state.history_loading.borrow()
         || !*state.history_has_more.borrow()
@@ -44,15 +114,20 @@ pub(super) fn prepend_messages(state: &AppState, mut messages: Vec<MessageInfo>)
     let adj = state.message_scroll.vadjustment();
     let old_upper = adj.upper();
     let old_value = adj.value();
-    let last_day = state.last_msg_day.borrow().clone();
-    *state.last_msg_day.borrow_mut() = None;
+    let old_layout_count = state.message_layout.borrow().rows.len();
     *state.scroll_pinning.borrow_mut() = true;
     *state.stick_bottom.borrow_mut() = false;
     for message in &messages {
         append_message(state, message, false);
     }
-    *state.last_msg_day.borrow_mut() = last_day;
     state.message_list.move_tail_to_front(old_count);
+    state
+        .message_layout
+        .borrow_mut()
+        .rows
+        .rotate_left(old_layout_count);
+    refresh_message_layout(state);
+    super::replies::refresh_all(state);
     *state.msg_list_fp.borrow_mut() = None;
     let generation = *state.history_generation.borrow();
     let s = state.clone();
@@ -227,28 +302,19 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
 
     let list = &state.message_list;
 
-    // Date separator like mobile LINE (Today / Yesterday / Fri, Jul 24).
-    if msg.created_time > 0 {
-        let day = day_key(msg.created_time);
-        let need_sep = state.last_msg_day.borrow().as_deref() != Some(day.as_str());
-        if need_sep {
-            *state.last_msg_day.borrow_mut() = Some(day);
-            let sep_row = gtk::ListBoxRow::builder()
-                .selectable(false)
-                .activatable(false)
-                .css_classes(["line-day-sep-row"])
-                .build();
-            let sep = gtk::Label::builder()
-                .label(format_day_separator(msg.created_time))
-                .halign(gtk::Align::Center)
-                .css_classes(["line-day-sep"])
-                .build();
-            sep_row.set_child(Some(&sep));
-            list.append(&sep_row);
-        }
-    }
-
     let row = gtk::ListBoxRow::new();
+    let row_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let day = gtk::Label::builder()
+        .label(format_day_separator(msg.created_time))
+        .halign(gtk::Align::Center)
+        .css_classes(["line-day-sep", "line-day-sep-row"])
+        .build();
+    let gap = gtk::Separator::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .css_classes(["line-time-gap"])
+        .build();
+    row_content.append(&day);
+    row_content.append(&gap);
     let outer = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
@@ -268,16 +334,9 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             gtk::Align::Start
         })
         .build();
-    senders::append(state, msg, &outer, &content);
+    let identity = senders::append(state, msg, &outer, &content);
     if let Some(id) = msg.related_message_id.as_deref() {
-        let quote = gtk::Label::builder()
-            .label(reply_description(state, id))
-            .xalign(0.0)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .max_width_chars(42)
-            .css_classes(["line-reply-preview", "caption"])
-            .build();
-        content.append(&quote);
+        super::replies::append(state, &content, id);
     }
     let bubble = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -518,7 +577,22 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         outer.append(&gtk::Box::builder().hexpand(true).build());
     }
 
-    row.set_child(Some(&outer));
+    row_content.append(&outer);
+    row.set_child(Some(&row_content));
+    let layout_row = LayoutRow {
+        id: msg.id.clone(),
+        from: msg.from.clone(),
+        mine: msg.mine,
+        time: msg.created_time,
+        day,
+        gap,
+        identity,
+    };
+    {
+        let mut layout = state.message_layout.borrow_mut();
+        update_layout_row(layout.rows.last(), &layout_row);
+        layout.rows.push(layout_row);
+    }
     if !msg.id.is_empty() {
         state
             .message_rows
@@ -552,7 +626,7 @@ pub(super) fn clear_reply(state: &AppState) {
     state.reply_label.set_text("");
 }
 
-fn reply_summary(msg: &MessageInfo) -> String {
+pub(super) fn reply_summary(msg: &MessageInfo) -> String {
     let text = msg
         .file_name
         .as_deref()
@@ -568,20 +642,6 @@ fn reply_summary(msg: &MessageInfo) -> String {
             .take(160)
             .collect()
     }
-}
-
-fn reply_description(state: &AppState, id: &str) -> String {
-    let summary = if state.unsent_msg_ids.borrow().contains(id) {
-        crate::i18n::t("message_unsent")
-    } else {
-        state
-            .message_index
-            .borrow()
-            .get(id)
-            .map(reply_summary)
-            .unwrap_or_else(|| crate::i18n::t("reply_original_unavailable"))
-    };
-    crate::i18n::tf("replying_to", &[("message", &summary)])
 }
 
 pub(super) fn refresh_reply_preview(state: &AppState) {
@@ -708,6 +768,8 @@ pub(super) fn apply_message_unsent(state: &AppState, chat_mid: &str, message_id:
         clear_reply(state);
     }
     state.message_index.borrow_mut().remove(message_id);
+    super::replies::invalidate(state, message_id);
+    remove_message_layout(state, message_id);
     let playing = state
         .voice_playback
         .borrow()
@@ -1337,6 +1399,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
     }
     let duration_ms = ffprobe_duration_ms(std::path::Path::new(path)).map(|v| v as i64);
     let msg = MessageInfo {
+        mentioned_mids: Vec::new(),
         id: message_id.to_string(),
         text: "Voice message".into(),
         related_message_id: None,
@@ -1591,6 +1654,8 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 
 pub(super) fn clear_messages(state: &AppState) {
     senders::clear_slots(state);
+    *state.message_layout.borrow_mut() = MessageLayout::default();
+    *state.reply_ui.borrow_mut() = super::replies::ReplyUi::default();
     state.message_index.borrow_mut().clear();
     if state.current_chat.borrow().is_none() {
         clear_reply(state);
@@ -1604,7 +1669,6 @@ pub(super) fn clear_messages(state: &AppState) {
     state.receipt_slots.borrow_mut().clear();
     state.msg_created.borrow_mut().clear();
     state.pending_rows.borrow_mut().clear();
-    *state.last_msg_day.borrow_mut() = None;
     state.seen_msg_ids.borrow_mut().clear();
     *state.last_incoming_id.borrow_mut() = None;
     state.media_queue.borrow_mut().clear();
@@ -1896,6 +1960,75 @@ pub(super) fn jump_to_latest(state: &AppState) {
 
 #[cfg(test)]
 mod receipt_tests {
+    #[test]
+    fn message_grouping_respects_sender_and_twenty_minute_boundary() {
+        use super::message_boundary;
+        let time = 1_800_000_000_000;
+        assert_eq!(message_boundary(None, "a", false, time), (false, false));
+        assert_eq!(
+            message_boundary(Some(("a", false, time)), "a", false, time + 1_199_000),
+            (true, false)
+        );
+        assert_eq!(
+            message_boundary(Some(("a", false, time)), "a", false, time + 1_200_000),
+            (false, true)
+        );
+        assert_eq!(
+            message_boundary(Some(("a", false, time)), "b", false, time + 1_000),
+            (false, false)
+        );
+        assert_eq!(
+            message_boundary(Some(("", false, time)), "", false, time + 1_000),
+            (false, false)
+        );
+        assert_eq!(
+            message_boundary(
+                Some(("a", false, time / 1000)),
+                "a",
+                false,
+                time / 1000 + 1200
+            ),
+            (false, true)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run under xvfb-run"]
+    fn gtk_sender_layout_repairs_prepend_and_removed_message_boundaries() {
+        use super::*;
+        gtk::init().unwrap();
+        let make = |id: &str, sender: &str, time| LayoutRow {
+            id: id.into(),
+            from: sender.into(),
+            mine: false,
+            time,
+            day: gtk::Label::new(None),
+            gap: gtk::Separator::new(gtk::Orientation::Horizontal),
+            identity: Some((
+                gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast(),
+                gtk::Label::new(None).upcast(),
+            )),
+        };
+        let time = 1_800_000_000_000;
+        let oldest = make("1", "a", time);
+        let first = make("2", "a", time + 1000);
+        update_layout_row(None, &first);
+        assert!(first.identity.as_ref().unwrap().0.is_visible());
+        update_layout_row(Some(&oldest), &first);
+        assert!(!first.identity.as_ref().unwrap().0.is_visible());
+        assert!(!first.identity.as_ref().unwrap().1.is_visible());
+        assert!(!first.day.is_visible());
+        let different = make("3", "b", time + 2000);
+        let next = make("4", "a", time + 3000);
+        update_layout_row(Some(&different), &next);
+        assert!(next.identity.as_ref().unwrap().0.is_visible());
+        update_layout_row(Some(&first), &next);
+        assert!(!next.identity.as_ref().unwrap().0.is_visible());
+        let later = make("5", "a", time + 1_203_000);
+        update_layout_row(Some(&next), &later);
+        assert!(later.identity.as_ref().unwrap().0.is_visible());
+        assert!(later.gap.is_visible());
+    }
     use super::*;
 
     #[test]

@@ -1,10 +1,6 @@
 use super::*;
 
 pub(super) fn open_sticker_picker(state: &AppState) {
-    open_expression_picker(state, "sticker");
-}
-
-pub(super) fn open_expression_picker(state: &AppState, kind: &str) {
     if state.current_chat.borrow().is_none() {
         toast(state, &crate::i18n::t("select_chat_first"));
         return;
@@ -13,22 +9,42 @@ pub(super) fn open_expression_picker(state: &AppState, kind: &str) {
         toast(state, &crate::i18n::t("still_restoring"));
         return;
     }
-    *state.expression_picker_kind.borrow_mut() = kind.into();
-    let cached = state.expression_catalogs.borrow().get(kind).cloned();
-    fill_sticker_popover(
-        state,
-        &cached
-            .clone()
-            .unwrap_or_else(|| serde_json::json!({"packs":[]})),
-        kind,
-    );
-    state.sticker_popover.popup();
-    if cached.is_none() {
-        super::expressions::request_local(state, kind);
+    let root = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    root.set_homogeneous(true);
+    state.expression_panels.borrow_mut().clear();
+    for kind in ["sticker", "emoji"] {
+        let panel = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .build();
+        state
+            .expression_panels
+            .borrow_mut()
+            .insert(kind.into(), panel.clone());
+        root.append(&panel);
+        let cached = state.expression_catalogs.borrow().get(kind).cloned();
+        fill_sticker_popover(
+            state,
+            &cached
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({"packs":[]})),
+            kind,
+        );
+        if cached.is_none() {
+            super::expressions::request_local(state, kind);
+        }
     }
+    state.sticker_popover.set_child(Some(&root));
+    state.sticker_popover.popup();
 }
 
 pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value, kind: &str) {
+    let Some(panel) = state.expression_panels.borrow().get(kind).cloned() else {
+        return;
+    };
+    while let Some(child) = panel.first_child() {
+        panel.remove(&child);
+    }
     if kind == "emoji" {
         *state.emoji_catalog.borrow_mut() = result.clone();
     }
@@ -44,17 +60,17 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value,
         .css_classes(["line-sticker-chooser"])
         .build();
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    for (value, key) in [("sticker", "stickers"), ("emoji", "emojis")] {
-        let button = gtk::ToggleButton::with_label(&crate::i18n::t(key));
-        button.set_active(value == kind);
-        let s = state.clone();
-        button.connect_clicked(move |button| {
-            if button.is_active() {
-                open_expression_picker(&s, value);
-            }
-        });
-        header.append(&button);
-    }
+    header.append(
+        &gtk::Label::builder()
+            .label(crate::i18n::t(if kind == "emoji" {
+                "emojis"
+            } else {
+                "stickers"
+            }))
+            .css_classes(["heading"])
+            .margin_start(12)
+            .build(),
+    );
     let manage = gtk::Button::builder()
         .icon_name("folder-download-symbolic")
         .tooltip_text(crate::i18n::t("expressions_manage"))
@@ -92,7 +108,7 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value,
             .margin_end(20)
             .build();
         root.append(&empty);
-        state.sticker_popover.set_child(Some(&root));
+        panel.append(&root);
         return;
     }
 
@@ -164,8 +180,8 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value,
             .build();
         let grid = gtk::FlowBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .max_children_per_line(5)
-            .min_children_per_line(4)
+            .max_children_per_line(3)
+            .min_children_per_line(3)
             .row_spacing(4)
             .column_spacing(4)
             .homogeneous(true)
@@ -321,7 +337,7 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value,
     root.append(&pages);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&tab_scroll);
-    state.sticker_popover.set_child(Some(&root));
+    panel.append(&root);
 }
 
 pub(super) fn send_sticker_now(
@@ -345,6 +361,7 @@ pub(super) fn send_sticker_now(
                 id,
                 &chat_mid,
                 MessageInfo {
+                    mentioned_mids: Vec::new(),
                     id: String::new(),
                     text: "[Sticker]".into(),
                     related_message_id: None,
@@ -706,6 +723,7 @@ pub(super) fn send_local_media_path(state: &AppState, path: PathBuf) {
                 id,
                 &chat_mid,
                 MessageInfo {
+                    mentioned_mids: Vec::new(),
                     id: String::new(),
                     text,
                     related_message_id: None,
@@ -923,6 +941,7 @@ pub(super) fn finish_voice_record(state: &AppState, send: bool) {
                 id,
                 &chat_mid,
                 MessageInfo {
+                    mentioned_mids: Vec::new(),
                     id: String::new(),
                     text: "Voice message".into(),
                     related_message_id: None,
