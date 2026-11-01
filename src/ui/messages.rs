@@ -650,7 +650,7 @@ pub(super) fn apply_message_unsent(state: &AppState, chat_mid: &str, message_id:
     state.media_ready_paths.borrow_mut().remove(message_id);
     state
         .app
-        .withdraw_notification(&format!("line-gtk-{message_id}"));
+        .withdraw_notification(&format!("line-rust-{message_id}"));
     if state.current_chat.borrow().as_deref() != Some(chat_mid) {
         return;
     }

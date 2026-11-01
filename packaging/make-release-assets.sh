@@ -4,16 +4,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VER="$(grep -m1 '^version' "$ROOT/Cargo.toml" | cut -d'"' -f2)"
 ARCH="$(uname -m)"
-DIST_DIR="${LINE_GTK_DIST_DIR:-/tmp}"
+DIST_DIR="${LINE_RUST_DIST_DIR:-/tmp}"
 mkdir -p "$DIST_DIR"
 DIST_DIR="$(cd "$DIST_DIR" && pwd)"
-export LINE_GTK_DIST_DIR="$DIST_DIR"
+export LINE_RUST_DIST_DIR="$DIST_DIR"
 
 env DENO="${DENO:-deno}" "$ROOT/packaging/make-prebuild.sh"
 env DENO="${DENO:-deno}" "$ROOT/packaging/make-flatpak.sh"
 
-PREBUILD="line-gtk-${VER}-${ARCH}.tar.gz"
-FLATPAK="line-gtk-${VER}-${ARCH}.flatpak"
+PREBUILD="line-rust-${VER}-${ARCH}.tar.gz"
+FLATPAK="line-rust-${VER}-${ARCH}.flatpak"
 
 cd "$DIST_DIR"
 sha256sum "$PREBUILD" "$FLATPAK" > "SHA256SUMS-${ARCH}"

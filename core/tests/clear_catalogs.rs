@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use line_gtk_core::{
+use line_rust_core::{
     store::Store,
     sync::{Command, Engine, Transport},
 };
@@ -88,7 +88,7 @@ impl Transport for Offline {
         assert!(matches!(method, "list_chats" | "list_friends"));
         assert!(p["previous"]["chats"].is_null());
         assert!(p["previous"]["friends"].is_null());
-        line_gtk_core::catalog::load(method, &p["previous"], |_, _| bail!("offline"))
+        line_rust_core::catalog::load(method, &p["previous"], |_, _| bail!("offline"))
     }
 }
 

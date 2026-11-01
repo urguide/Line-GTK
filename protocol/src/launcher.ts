@@ -2,8 +2,8 @@
 import { join } from "@std/path";
 import { permissions } from "./sandbox.ts";
 import { wireLine } from "./raw_codec.ts";
-const data = Deno.args[0] || Deno.env.get("LINE_GTK_DATA");
-if (!data) throw new Error("LINE_GTK_DATA or first argument required");
+const data = Deno.args[0] || Deno.env.get("LINE_RUST_DATA");
+if (!data) throw new Error("LINE_RUST_DATA or first argument required");
 // These roots are application IPC/auth areas, never the message database or user files.
 const protocolData = join(data, "protocol-state");
 const transfer = join(data, "cache", "transfer");

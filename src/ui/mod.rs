@@ -40,7 +40,7 @@ use std::rc::Rc;
 
 pub fn run(repo_root: PathBuf, data_dir: PathBuf) -> Result<()> {
     let app = Application::builder()
-        .application_id("dev.linegtk.LineGtk")
+        .application_id("io.github.urguide.LineRust")
         .flags(gio::ApplicationFlags::FLAGS_NONE)
         .build();
 
@@ -71,11 +71,11 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     let window = ApplicationWindow::builder()
         .application(app)
         .title(crate::i18n::t("app_title"))
-        .icon_name("line-gtk")
+        .icon_name("line-rust")
         .default_width(1180)
         .default_height(760)
         .build();
-    window.set_icon_name(Some("line-gtk"));
+    window.set_icon_name(Some("line-rust"));
     window.set_size_request(WINDOW_MIN_W, WINDOW_MIN_H);
 
     let toast_overlay = libadwaita::ToastOverlay::new();
@@ -285,23 +285,23 @@ fn register_app_icons(repo_root: &std::path::Path) {
             theme.add_search_path(icon_root.join("hicolor").join(size).join("apps"));
         }
     }
-    gtk::Window::set_default_icon_name("line-gtk");
+    gtk::Window::set_default_icon_name("line-rust");
 }
 
 fn apply_brand_icon(image: &gtk::Image, repo_root: &std::path::Path) {
     image.set_pixel_size(22);
     if let Some(display) = gtk::gdk::Display::default() {
         let theme = gtk::IconTheme::for_display(&display);
-        if theme.has_icon("line-gtk") {
-            image.set_icon_name(Some("line-gtk"));
+        if theme.has_icon("line-rust") {
+            image.set_icon_name(Some("line-rust"));
             return;
         }
     }
-    let png = repo_root.join("assets/icons/hicolor/64x64/apps/line-gtk.png");
+    let png = repo_root.join("assets/icons/hicolor/64x64/apps/line-rust.png");
     if png.is_file() {
         image.set_from_file(Some(&png));
     } else {
-        image.set_icon_name(Some("line-gtk"));
+        image.set_icon_name(Some("line-rust"));
     }
 }
 

@@ -1,5 +1,5 @@
 use anyhow::bail;
-use line_gtk_core::{
+use line_rust_core::{
     sticker_cache::{self, Fetch},
     stickers,
 };

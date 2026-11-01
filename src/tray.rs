@@ -46,7 +46,7 @@ fn tray_icon() -> ksni::Icon {
     static ICON: OnceLock<ksni::Icon> = OnceLock::new();
     ICON.get_or_init(|| {
         let img = image::load_from_memory_with_format(
-            include_bytes!("../assets/icons/hicolor/64x64/apps/line-gtk.png"),
+            include_bytes!("../assets/icons/hicolor/64x64/apps/line-rust.png"),
             image::ImageFormat::Png,
         )
         .expect("bundled tray icon");
@@ -88,15 +88,15 @@ fn truncate_name(name: &str, max_chars: usize) -> String {
 
 impl ksni::Tray for LineTray {
     fn id(&self) -> String {
-        "dev.linegtk.LineGtk".into()
+        "io.github.urguide.LineRust".into()
     }
 
     fn title(&self) -> String {
         let muted = self.muted_until_epoch > now_epoch();
         if muted {
-            "LINE GTK (muted)".into()
+            "line-rust (muted)".into()
         } else {
-            "LINE GTK".into()
+            "line-rust".into()
         }
     }
 
@@ -105,7 +105,7 @@ impl ksni::Tray for LineTray {
     }
 
     fn icon_name(&self) -> String {
-        "line-gtk".into()
+        "line-rust".into()
     }
 
     fn category(&self) -> ksni::Category {

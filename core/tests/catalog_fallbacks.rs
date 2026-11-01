@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use line_gtk_core::{catalog, postback};
+use line_rust_core::{catalog, postback};
 use serde_json::{Value, json};
 
 fn row<'a>(result: &'a Value, key: &str, mid: &str) -> &'a Value {

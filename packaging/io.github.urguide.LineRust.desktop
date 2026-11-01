@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=line-rust
+Comment=Native unofficial LINE client
+Exec=line-rust
+Icon=line-rust
+Terminal=false
+Type=Application
+Categories=Network;InstantMessaging;
+StartupWMClass=io.github.urguide.LineRust
+StartupNotify=true

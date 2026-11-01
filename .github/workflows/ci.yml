@@ -42,9 +42,9 @@ jobs:
       - name: Verify compiled sidecar starts without network access
         working-directory: .
         run: |
-          data_dir="$RUNNER_TEMP/line-gtk-offline"
+          data_dir="$RUNNER_TEMP/line-rust-offline"
           mkdir -p "$data_dir"
-          timeout 3 env LINE_GTK_DATA="$data_dir" protocol/line-gtk-protocol > "$RUNNER_TEMP/sidecar.out" || test $? = 124
+          timeout 3 env LINE_RUST_DATA="$data_dir" protocol/line-rust-protocol > "$RUNNER_TEMP/sidecar.out" || test $? = 124
           grep -q '"event":"ready"' "$RUNNER_TEMP/sidecar.out"
 
   package:
@@ -76,6 +76,6 @@ jobs:
       - name: Add Flathub
         run: flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
       - name: Validate application metadata
-        run: appstreamcli validate --no-net packaging/flatpak/dev.linegtk.LineGtk.metainfo.xml
+        run: appstreamcli validate --no-net packaging/flatpak/io.github.urguide.LineRust.metainfo.xml
       - name: Build and smoke-test Flatpak bundle
         run: ./packaging/make-flatpak.sh

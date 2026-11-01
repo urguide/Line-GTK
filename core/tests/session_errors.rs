@@ -1,8 +1,8 @@
-use line_gtk_core::session::authentication_failure;
+use line_rust_core::session::authentication_failure;
 
 #[test]
 fn an_old_session_timer_cannot_reset_crash_recovery_budget() {
-    use line_gtk_core::session::recovery_is_stable;
+    use line_rust_core::session::recovery_is_stable;
     assert!(recovery_is_stable(Some(100), Some(100), true, true));
     for (expected, current, running, ready) in [
         (Some(100), Some(101), true, true),
@@ -43,7 +43,7 @@ fn only_authentication_codes_terminate_a_session() {
 
 #[test]
 fn failed_live_message_and_following_good_message_both_reach_ui_and_disk() {
-    use line_gtk_core::{
+    use line_rust_core::{
         store::Store,
         sync::{Command, Engine, Transport},
     };

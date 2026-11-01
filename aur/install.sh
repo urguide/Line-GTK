@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 
 makepkg -sic
-rm -rf line-gtk*
+rm -rf line-rust*

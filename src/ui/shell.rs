@@ -67,12 +67,12 @@ pub fn build_shell_page() -> ShellWidgets {
     let header = libadwaita::HeaderBar::new();
 
     let brand_icon = gtk::Image::builder()
-        .icon_name("line-gtk")
+        .icon_name("line-rust")
         .pixel_size(22)
         .css_classes(["line-app-brand-icon"])
         .build();
     let brand_label = gtk::Label::builder()
-        .label("LINE GTK")
+        .label("line-rust")
         .css_classes(["heading", "line-app-brand-label"])
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
@@ -95,7 +95,7 @@ pub fn build_shell_page() -> ShellWidgets {
         .css_classes(["line-title-avatar"])
         .build();
     let profile_label = gtk::Label::builder()
-        .label("LINE GTK")
+        .label("line-rust")
         .css_classes(["heading", "line-title-name"])
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();

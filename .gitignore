@@ -1,6 +1,7 @@
 # Generated
 /target
 /core/target
+/protocol/line-rust-protocol
 **/*.rs.bk
 
 # Local session / secrets

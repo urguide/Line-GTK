@@ -1,5 +1,5 @@
 use anyhow::bail;
-use line_gtk_core::sticker_cache::{self, Fetch};
+use line_rust_core::sticker_cache::{self, Fetch};
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},

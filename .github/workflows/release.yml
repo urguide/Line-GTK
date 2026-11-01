@@ -70,7 +70,7 @@ jobs:
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
           test "$(uname -m)" = "$EXPECTED_ARCH"
-          echo "LINE_GTK_DIST_DIR=$RUNNER_TEMP/line-gtk-dist" >> "$GITHUB_ENV"
+          echo "LINE_RUST_DIST_DIR=$RUNNER_TEMP/line-rust-dist" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -92,22 +92,22 @@ jobs:
         working-directory: protocol
         run: deno task check
       - name: Validate Flatpak metadata
-        run: appstreamcli validate --no-net packaging/flatpak/dev.linegtk.LineGtk.metainfo.xml
+        run: appstreamcli validate --no-net packaging/flatpak/io.github.urguide.LineRust.metainfo.xml
       - name: Build and check release assets
         run: ./packaging/make-release-assets.sh
       - name: Verify checksums
         env:
           ARCH: ${{ matrix.arch }}
         run: |
-          cd "$LINE_GTK_DIST_DIR"
+          cd "$LINE_RUST_DIST_DIR"
           sha256sum --check "SHA256SUMS-$ARCH"
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.arch }}
           path: |
-            ${{ runner.temp }}/line-gtk-dist/*.tar.gz
-            ${{ runner.temp }}/line-gtk-dist/*.flatpak
-            ${{ runner.temp }}/line-gtk-dist/SHA256SUMS-*
+            ${{ runner.temp }}/line-rust-dist/*.tar.gz
+            ${{ runner.temp }}/line-rust-dist/*.flatpak
+            ${{ runner.temp }}/line-rust-dist/SHA256SUMS-*
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -143,8 +143,8 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           for arch in x86_64 aarch64; do
-            test -s "line-gtk-$VERSION-$arch.tar.gz"
-            test -s "line-gtk-$VERSION-$arch.flatpak"
+            test -s "line-rust-$VERSION-$arch.tar.gz"
+            test -s "line-rust-$VERSION-$arch.flatpak"
             test "$(wc -l < "SHA256SUMS-$arch")" -eq 2
             sha256sum --check "SHA256SUMS-$arch"
           done
@@ -173,4 +173,21 @@ jobs:
               --verify-tag --title "$TAG" --generate-notes "${prerelease[@]}"
           fi
           gh release upload "$TAG" --clobber ./*.tar.gz ./*.flatpak SHA256SUMS
-          gh release edit "$TAG" --draft=false "${prerelease[@]}"
+          # Keep generated notes and make the exact source download explicit,
+          # including when resuming a draft created by an earlier run.
+          source_url="https://github.com/$GH_REPO/archive/refs/tags/$TAG.tar.gz"
+          gh release view "$TAG" --json body --jq '.body // ""' > release-notes.md
+          if ! grep -Fq "$source_url" release-notes.md; then
+            cat >> release-notes.md <<EOF
+
+          ## License and source code
+
+          This is a modified fork of [MidnightTale/line-gtk](https://github.com/MidnightTale/line-gtk), maintained by urguide, licensed under GPL-3.0-or-later and provided without warranty.
+
+          Sources for these binaries: [$TAG source archive]($source_url).
+          The tagged project sources include build and packaging scripts and dependency lockfiles.
+          See the [build instructions](https://github.com/$GH_REPO/blob/$TAG/README.md#build-and-run) and [distribution notes](https://github.com/$GH_REPO/blob/$TAG/packaging/README.md).
+          Third-party components remain subject to their respective licenses and notices.
+          EOF
+          fi
+          gh release edit "$TAG" --notes-file release-notes.md --draft=false "${prerelease[@]}"

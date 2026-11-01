@@ -1,0 +1,3 @@
+# Local-use entry point; share the latest-release resolver and verified hashes.
+# Run makepkg from this directory inside a complete repository checkout.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../aur/PKGBUILD"

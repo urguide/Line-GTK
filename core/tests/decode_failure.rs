@@ -1,5 +1,5 @@
 use anyhow::Result;
-use line_gtk_core::{
+use line_rust_core::{
     message::from_envelope,
     store::Store,
     sync::{Command, Engine, Transport},

@@ -756,7 +756,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
             let stable_state = state.clone();
             glib::timeout_add_local_once(std::time::Duration::from_secs(60), move || {
                 let status = stable_state.sidecar.status();
-                if line_gtk_core::session::recovery_is_stable(
+                if line_rust_core::session::recovery_is_stable(
                     stable_pid,
                     status.pid,
                     status.running,

@@ -1172,7 +1172,7 @@ pub(super) fn append_pdf_viewer(body: &gtk::Box, path: &str, suggest_name: &str)
 
     // Render first page with pdftoppm when available.
     let cache = std::env::temp_dir().join(format!(
-        "line-gtk-pdf-{}-preview",
+        "line-rust-pdf-{}-preview",
         std::path::Path::new(path)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -1190,7 +1190,7 @@ pub(super) fn append_pdf_viewer(body: &gtk::Box, path: &str, suggest_name: &str)
             "-r",
             "120",
             path,
-            out_prefix.to_str().unwrap_or("/tmp/line-gtk-pdf"),
+            out_prefix.to_str().unwrap_or("/tmp/line-rust-pdf"),
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

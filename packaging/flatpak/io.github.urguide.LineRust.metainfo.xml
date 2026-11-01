@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>dev.linegtk.LineGtk</id>
-  <name>LINE GTK</name>
+  <id>io.github.urguide.LineRust</id>
+  <name>line-rust</name>
   <summary>Unofficial native LINE client for Linux</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
@@ -9,12 +9,13 @@
     <name>MidnightTale</name>
   </developer>
   <description>
-    <p>LINE GTK is an unofficial GTK4 and Libadwaita desktop client that brings LINE chats and media to Linux.</p>
+    <p>line-rust is an unofficial GTK4 and Libadwaita desktop client that brings LINE chats and media to Linux.</p>
     <p>It supports chats, media, stickers, friends, notifications, downloads, and experimental voice calls.</p>
+    <p>This is a modified fork of MidnightTale/line-gtk, maintained by urguide.</p>
   </description>
-  <launchable type="desktop-id">dev.linegtk.LineGtk.desktop</launchable>
-  <url type="homepage">https://github.com/MidnightTale/Line-GTK</url>
-  <url type="bugtracker">https://github.com/MidnightTale/Line-GTK/issues</url>
+  <launchable type="desktop-id">io.github.urguide.LineRust.desktop</launchable>
+  <url type="homepage">https://github.com/urguide/line-rust</url>
+  <url type="bugtracker">https://github.com/urguide/line-rust/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
     <release version="0.1.2" date="2026-08-02">

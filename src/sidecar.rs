@@ -70,7 +70,7 @@ impl Sidecar {
 
     fn start_process(&self) -> Result<()> {
         let script = self.repo_root.join("protocol/src/launcher.ts");
-        let compiled = self.repo_root.join("protocol/line-gtk-protocol");
+        let compiled = self.repo_root.join("protocol/line-rust-protocol");
         if !compiled.is_file() && !script.exists() {
             return Err(anyhow!("protocol sidecar missing at {}", script.display()));
         }
@@ -108,7 +108,7 @@ impl Sidecar {
                 .arg("--allow-read")
                 .arg(format!("--allow-write={}", self.data_dir.display()))
                 .arg("--allow-net")
-                .arg("--allow-env=HOME,PATH,DENO_DIR,Q_DEBUG,NODE_DEBUG,NO_COLOR,LINE_GTK_DATA,LINE_GTK_LANG,LINE_GTK_CACHE_RETENTION,LINE_GTK_AUDIO_INPUT,LINE_GTK_AUDIO_OUTPUT,LINE_DEVICE,LINE_VERSION,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_CALL_OPUS_SIGNAL,LINE_CALL_DEBUG")
+                .arg("--allow-env=HOME,PATH,DENO_DIR,Q_DEBUG,NODE_DEBUG,NO_COLOR,LINE_RUST_DATA,LINE_RUST_LANG,LINE_RUST_CACHE_RETENTION,LINE_RUST_AUDIO_INPUT,LINE_RUST_AUDIO_OUTPUT,LINE_DEVICE,LINE_VERSION,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_CALL_OPUS_SIGNAL,LINE_CALL_DEBUG")
                 .arg(&script);
             (command, deno)
         };
@@ -116,17 +116,17 @@ impl Sidecar {
         let mut child = command
             .arg(&self.data_dir)
             .current_dir(self.repo_root.join("protocol"))
-            .env("LINE_GTK_DATA", &self.data_dir)
-            .env("LINE_GTK_LANG", cfg.language.clone())
-            .env("LINE_GTK_CACHE_RETENTION", cfg.cache_retention.clone())
-            .env("LINE_GTK_AUDIO_INPUT", {
+            .env("LINE_RUST_DATA", &self.data_dir)
+            .env("LINE_RUST_LANG", cfg.language.clone())
+            .env("LINE_RUST_CACHE_RETENTION", cfg.cache_retention.clone())
+            .env("LINE_RUST_AUDIO_INPUT", {
                 if cfg.audio_input.is_empty() {
                     "default".into()
                 } else {
                     cfg.audio_input
                 }
             })
-            .env("LINE_GTK_AUDIO_OUTPUT", {
+            .env("LINE_RUST_AUDIO_OUTPUT", {
                 if cfg.audio_output.is_empty() {
                     "default".into()
                 } else {
@@ -175,7 +175,7 @@ impl Sidecar {
             .name("line-sidecar-stderr".into())
             .spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(|line| line.ok()) {
-                    tracing::warn!(target: "line_gtk::protocol", "{line}");
+                    tracing::warn!(target: "line_rust::protocol", "{line}");
                 }
             })
             .context("failed to start sidecar stderr reader")?;
@@ -213,7 +213,7 @@ impl Sidecar {
             })
             .unwrap_or((false, None));
         SidecarStatus {
-            runtime: if self.repo_root.join("protocol/line-gtk-protocol").is_file() {
+            runtime: if self.repo_root.join("protocol/line-rust-protocol").is_file() {
                 "compiled"
             } else {
                 "deno"
@@ -248,7 +248,7 @@ impl Sidecar {
         let generation = self.generation.load(Ordering::SeqCst);
         let body = params.as_ref().cloned().unwrap_or_else(|| json!({}));
         let chat = body["chatMid"].as_str().unwrap_or_default().to_owned();
-        use line_gtk_core::sync::Command as CoreCommand;
+        use line_rust_core::sync::Command as CoreCommand;
         let cfg = crate::config::AppConfig::load(&self.data_dir);
         self.set_cache_retention(&cfg.cache_retention)?;
         if matches!(method, "fetch_messages" | "download_media") {
@@ -334,7 +334,7 @@ impl Sidecar {
     pub fn set_cache_retention(&self, mode: &str) -> Result<()> {
         self.core
             .commands
-            .send(line_gtk_core::sync::Command::Retention(mode.to_owned()))?;
+            .send(line_rust_core::sync::Command::Retention(mode.to_owned()))?;
         Ok(())
     }
 
@@ -629,7 +629,7 @@ fn read_loop_inner<R: std::io::Read>(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default()
                                 .to_string(),
-                            picture_path: line_gtk_core::catalog::picture(&resp.extra)
+                            picture_path: line_rust_core::catalog::picture(&resp.extra)
                                 .map(str::to_owned),
                             avatar_path: resp
                                 .extra
@@ -1030,7 +1030,7 @@ fn spawn_timeout_worker(
 impl Drop for Sidecar {
     fn drop(&mut self) {
         self.stop_process();
-        let _ = self.core.commands.send(line_gtk_core::sync::Command::Stop);
+        let _ = self.core.commands.send(line_rust_core::sync::Command::Stop);
     }
 }
 

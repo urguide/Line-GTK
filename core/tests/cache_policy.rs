@@ -1,5 +1,5 @@
 use anyhow::Result;
-use line_gtk_core::{
+use line_rust_core::{
     cache_policy::{CachePolicy, DAY, MINUTE, MONTH, WEEK},
     store::{Cursor, Page, Store},
     sync::{Command, Engine, Transport},

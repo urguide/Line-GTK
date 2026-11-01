@@ -8,11 +8,11 @@ case "$ARCH" in
   x86_64|aarch64) ;;
   *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
-DIST_DIR="${LINE_GTK_DIST_DIR:-/tmp}"
+DIST_DIR="${LINE_RUST_DIST_DIR:-/tmp}"
 mkdir -p "$DIST_DIR"
 DIST_DIR="$(cd "$DIST_DIR" && pwd)"
-STAGE="${DIST_DIR}/line-gtk-${VER}-${ARCH}"
-OUT="${DIST_DIR}/line-gtk-${VER}-${ARCH}.flatpak"
+STAGE="${DIST_DIR}/line-rust-${VER}-${ARCH}"
+OUT="${DIST_DIR}/line-rust-${VER}-${ARCH}.flatpak"
 
 command -v flatpak >/dev/null || {
   echo "flatpak is required" >&2
@@ -23,18 +23,18 @@ command -v flatpak-builder >/dev/null || {
   exit 1
 }
 
-if [[ ! -x "$STAGE/line-gtk" || ! -x "$STAGE/protocol/line-gtk-protocol" ]]; then
+if [[ ! -x "$STAGE/line-rust" || ! -x "$STAGE/protocol/line-rust-protocol" ]]; then
   env DENO="${DENO:-deno}" "$ROOT/packaging/make-prebuild.sh"
 fi
 
-WORK="$(mktemp -d /tmp/line-gtk-flatpak.XXXXXX)"
+WORK="$(mktemp -d /tmp/line-rust-flatpak.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/payload"
 cp -a "$STAGE"/. "$WORK/payload/"
-cp "$ROOT/packaging/flatpak/dev.linegtk.LineGtk.yml" "$WORK/"
-cp "$ROOT/packaging/flatpak/dev.linegtk.LineGtk.metainfo.xml" "$WORK/"
+cp "$ROOT/packaging/flatpak/io.github.urguide.LineRust.yml" "$WORK/"
+cp "$ROOT/packaging/flatpak/io.github.urguide.LineRust.metainfo.xml" "$WORK/"
 
-MANIFEST="$WORK/dev.linegtk.LineGtk.yml"
+MANIFEST="$WORK/io.github.urguide.LineRust.yml"
 BUILD_DIR="$WORK/build"
 REPO_DIR="$WORK/repo"
 STATE_DIR="$WORK/state"
@@ -53,8 +53,8 @@ flatpak-builder \
 SMOKE_OUT="$WORK/sidecar.out"
 set +e
 timeout 5 flatpak-builder --run "$BUILD_DIR" "$MANIFEST" \
-  env LINE_GTK_DATA=/tmp/line-gtk-flatpak-smoke \
-  /app/share/line-gtk/protocol/line-gtk-protocol >"$SMOKE_OUT"
+  env LINE_RUST_DATA=/tmp/line-rust-flatpak-smoke \
+  /app/share/line-rust/protocol/line-rust-protocol >"$SMOKE_OUT"
 smoke_status=$?
 set -e
 [[ "$smoke_status" == 0 || "$smoke_status" == 124 ]]
@@ -65,7 +65,7 @@ flatpak build-bundle \
   --arch="$ARCH" \
   "$REPO_DIR" \
   "$OUT" \
-  dev.linegtk.LineGtk \
+  io.github.urguide.LineRust \
   stable \
   --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
 

@@ -1,12 +1,12 @@
-use line_gtk_core::attachments::{mime, normalize_media_type};
+use line_rust_core::attachments::{mime, normalize_media_type};
 
 #[test]
 fn cached_video_extensions_match_supported_upload_formats() {
     for extension in ["mp4", "webm", "mov", "mkv", "m4v", "WEBM", "MOV", "M4V"] {
-        assert!(line_gtk_core::attachments::video_extension(extension));
+        assert!(line_rust_core::attachments::video_extension(extension));
     }
     for extension in ["jpg", "png", "bin", "mp4.exe", ""] {
-        assert!(!line_gtk_core::attachments::video_extension(extension));
+        assert!(!line_rust_core::attachments::video_extension(extension));
     }
 }
 

@@ -1,4 +1,4 @@
-use line_gtk_core::store::{Cursor, Page, Store};
+use line_rust_core::store::{Cursor, Page, Store};
 use serde_json::json;
 use std::path::Path;
 

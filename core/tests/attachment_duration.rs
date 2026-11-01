@@ -1,4 +1,4 @@
-use line_gtk_core::attachments::{FALLBACK_DURATION_MS, duration_ms};
+use line_rust_core::attachments::{FALLBACK_DURATION_MS, duration_ms};
 
 #[test]
 fn explicit_duration_wins_without_running_probe() {

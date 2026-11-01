@@ -1,0 +1,41 @@
+id: io.github.urguide.LineRust
+runtime: org.gnome.Platform
+runtime-version: "50"
+sdk: org.gnome.Sdk
+command: line-rust
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --filesystem=xdg-run/discord-ipc-0
+  # Reuse existing Flatpak data after the application ID rename.
+  - --filesystem=~/.var/app/dev.linegtk.LineGtk/data/line-gtk
+
+modules:
+  - name: line-rust
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 line-rust /app/bin/line-rust
+      - install -d /app/share/line-rust
+      - cp -a protocol assets /app/share/line-rust/
+      - install -Dm644 io.github.urguide.LineRust.desktop /app/share/applications/io.github.urguide.LineRust.desktop
+      - sed -i 's/^Icon=.*/Icon=io.github.urguide.LineRust/' /app/share/applications/io.github.urguide.LineRust.desktop
+      - install -Dm644 assets/icons/hicolor/48x48/apps/line-rust.png /app/share/icons/hicolor/48x48/apps/io.github.urguide.LineRust.png
+      - install -Dm644 assets/icons/hicolor/64x64/apps/line-rust.png /app/share/icons/hicolor/64x64/apps/io.github.urguide.LineRust.png
+      - install -Dm644 assets/icons/hicolor/128x128/apps/line-rust.png /app/share/icons/hicolor/128x128/apps/io.github.urguide.LineRust.png
+      - install -Dm644 assets/icons/hicolor/256x256/apps/line-rust.png /app/share/icons/hicolor/256x256/apps/io.github.urguide.LineRust.png
+      - install -Dm644 assets/icons/hicolor/scalable/apps/line-rust.svg /app/share/icons/hicolor/scalable/apps/io.github.urguide.LineRust.svg
+      - install -Dm644 io.github.urguide.LineRust.metainfo.xml /app/share/metainfo/io.github.urguide.LineRust.metainfo.xml
+      - install -Dm644 LICENSE /app/share/licenses/io.github.urguide.LineRust/LICENSE
+      - install -Dm644 README.md /app/share/doc/line-rust/README.md
+    sources:
+      - type: dir
+        path: payload
+      - type: file
+        path: io.github.urguide.LineRust.metainfo.xml

@@ -43,7 +43,7 @@ pub struct AppConfig {
     pub close_to_tray: bool,
     /// Show Discord Rich Presence while the app is running.
     pub discord_rpc: bool,
-    /// Discord Application (Client) ID. Empty uses the built-in LINE GTK app ID.
+    /// Discord Application (Client) ID. Empty uses the built-in upstream app ID.
     pub discord_rpc_client_id: String,
     /// Include the open chat name in Discord presence (privacy trade-off).
     pub discord_rpc_show_chat: bool,
@@ -178,7 +178,9 @@ impl AppConfig {
         if !custom.is_empty() {
             return custom.to_string();
         }
-        if let Ok(env_id) = std::env::var("LINE_GTK_DISCORD_APP_ID") {
+        if let Ok(env_id) = std::env::var("LINE_RUST_DISCORD_APP_ID")
+            .or_else(|_| std::env::var("LINE_GTK_DISCORD_APP_ID"))
+        {
             let env_id = env_id.trim();
             if !env_id.is_empty() {
                 return env_id.to_string();
@@ -282,7 +284,7 @@ mod tests {
     #[test]
     fn save_is_atomic_and_private() {
         let dir = std::env::temp_dir().join(format!(
-            "line-gtk-config-test-{}-{}",
+            "line-rust-config-test-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("unnamed")
         ));

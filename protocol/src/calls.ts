@@ -74,8 +74,8 @@ type ActiveCall = {
 
 let activeCall: ActiveCall | null = null;
 let incomingOffer: { callId: string; from: string; kind: string } | null = null;
-let callAudioInput = Deno.env.get("LINE_GTK_AUDIO_INPUT")?.trim() || "default";
-let callAudioOutput = Deno.env.get("LINE_GTK_AUDIO_OUTPUT")?.trim() ||
+let callAudioInput = Deno.env.get("LINE_RUST_AUDIO_INPUT")?.trim() || "default";
+let callAudioOutput = Deno.env.get("LINE_RUST_AUDIO_OUTPUT")?.trim() ||
   "default";
 
 export function setCallAudioDevices(input?: string, output?: string) {

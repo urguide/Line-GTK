@@ -1,4 +1,23 @@
-Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protocol sidecar ([linejs](https://github.com/evex-dev/linejs)).
+# line-rust
+
+Unofficial native LINE client for Linux. Rust application core and GTK4 / Libadwaita UI with a Deno protocol sidecar ([linejs](https://github.com/evex-dev/linejs)).
+
+## Fork information
+
+This is a modified fork of
+[MidnightTale/line-gtk](https://github.com/MidnightTale/line-gtk),
+maintained by [urguide](https://github.com/urguide).
+
+As of **2026-11-01**, this fork includes Rust core restructuring, message and
+cache handling improvements, protocol recovery fixes, and automated Linux
+release packaging. These modifications are maintained by urguide; see the
+[Git history](https://github.com/urguide/line-rust/commits/master/) and
+[release notes](https://github.com/urguide/line-rust/releases) for individual
+changes and their dates.
+
+The original work is by MidnightTale and its contributors. Original copyright,
+license, and warranty notices are retained. This fork remains licensed under
+[GPL-3.0-or-later](LICENSE).
 
 
 ![main](./assets/761546283_1013837091419784_4898538377611644175_n.jpg)
@@ -8,7 +27,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 ## Implementation
 
 Message persistence, deduplication, 20-message pagination, gap repair and media
-download scheduling are owned by the Rust `line-gtk-core` crate. Messages and
+download scheduling are owned by the Rust `line-rust-core` crate. Messages and
 checkpoints use SQLite transactions; legacy JSON histories are imported once
 after login and retained as backups. The TypeScript bridge performs LINE API
 requests and E2EE decoding; decoded attachments cross IPC as temporary file paths,
@@ -165,33 +184,53 @@ Wayland and X11 both work. Tested mainly on Arch-based desktops.
 
 ---
 
-## Install (Arch / AUR)
+## Install (Arch)
+
+Use the local recipe to download and install the latest prebuilt release:
 
 ```bash
-# Development snapshot
-yay -S line-gtk-git
-
-# Tagged release
-yay -S line-gtk
+git clone https://github.com/urguide/line-rust.git
+cd line-rust/aur
+makepkg -si
 ```
 
 ## Install (Flatpak bundle)
 Download the matching `x86_64` or `aarch64` (ARM64) bundle from
-[this fork's releases](https://github.com/urguide/Line-GTK/releases).
+[this fork's releases](https://github.com/urguide/line-rust/releases).
 
 ```bash
-flatpak install --user ./line-gtk-VERSION-ARCH.flatpak
-flatpak run dev.linegtk.LineGtk
+flatpak install --user ./line-rust-VERSION-ARCH.flatpak
+flatpak run io.github.urguide.LineRust
 ```
 
 ## Build and run
 
 ```bash
-git clone https://github.com/urguide/Line-GTK.git
-cd Line-GTK
+git clone https://github.com/urguide/line-rust.git
+cd line-rust
 cargo build --release
-./target/release/line-gtk
+./target/release/line-rust
 ```
+
+## Upgrading from LINE GTK
+
+Quit the old application before starting line-rust. New installations use
+`~/.local/share/line-rust` (or `$XDG_DATA_HOME/line-rust`). On an existing
+installation, line-rust creates a link to the old `line-gtk` data directory
+and reuses it, preserving settings, login, SQLite history and absolute media
+cache paths. An existing `line-rust` profile always takes precedence.
+The diagnostics page shows the actual data path; new logs are `line-rust.log`.
+
+The Flatpak ID is now `io.github.urguide.LineRust`. Install the new bundle;
+it can reuse `~/.var/app/dev.linegtk.LineGtk/data/line-gtk` through a narrowly
+scoped filesystem permission. Keep that old data directory when uninstalling
+the old app; do not use `flatpak uninstall --delete-data` on the old ID.
+Run only one of the old and new applications at a time when sharing data.
+
+Environment variables now use `LINE_RUST_`. The old `LINE_GTK_ROOT` and
+`LINE_GTK_DISCORD_APP_ID` overrides are accepted for compatibility.
+Discord's default application ID is still the upstream public ID; a separate
+Discord application must be configured in Settings to change its registered branding.
 
 ## Reply to messages
 
@@ -243,4 +282,11 @@ Protocol and E2EE talk to LINE through [linejs](https://github.com/evex-dev/line
 
 ## License
 
-[GPL-3.0-or-later](LICENSE)
+This project, including this fork's modifications, is licensed under
+[GNU GPL version 3 or any later version](LICENSE), without any warranty.
+Third-party components remain subject to their respective licenses and notices.
+
+For a published binary release, use the matching release tag's **Source code**
+download on the [release page](https://github.com/urguide/line-rust/releases).
+The tagged project sources include the build and packaging scripts and dependency
+lockfiles. Build instructions are above and in [distribution notes](packaging/README.md).

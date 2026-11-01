@@ -2,7 +2,7 @@
 
 Release and AUR builds compile `protocol/src/launcher.ts` (with its sandboxed
 `runtime.ts` worker) into
-`protocol/line-gtk-protocol`. The resulting package is self-contained and does
+`protocol/line-rust-protocol`. The resulting package is self-contained and does
 not download JavaScript dependencies on first launch. Deno is a build-time tool
 only for packaged releases; source-tree development can still use Deno directly.
 
@@ -14,9 +14,10 @@ catalogs are present.
 
 `make-flatpak.sh` wraps the prebuilt release in a Flatpak using the GNOME 50
 runtime. It grants network, display, audio, GPU, notification, tray, and the
-Discord IPC socket access needed by the current client. It does not grant home
-directory or host filesystem access; GTK's document portal provides selected
-attachments and download destinations.
+Discord IPC socket access needed by the current client. A scoped permission for
+`~/.var/app/dev.linegtk.LineGtk/data/line-gtk` preserves old installation data
+after the application ID rename. GTK's document portal provides selected
+attachments and download destinations; broad home/host access is not granted.
 
 On Arch Linux, install the builder and create the bundle with:
 
@@ -27,11 +28,11 @@ yay -S --needed flatpak flatpak-builder
 
 Native x86_64 and ARM64 Linux builds are supported. ARM64 artifacts use the
 Linux architecture name `aarch64`. The output is
-`/tmp/line-gtk-VERSION-ARCH.flatpak`. Install the matching bundle locally with:
+`/tmp/line-rust-VERSION-ARCH.flatpak`. Install the matching bundle locally with:
 
 ```bash
-flatpak install --user /tmp/line-gtk-VERSION-ARCH.flatpak
-flatpak run dev.linegtk.LineGtk
+flatpak install --user /tmp/line-rust-VERSION-ARCH.flatpak
+flatpak run io.github.urguide.LineRust
 ```
 
 This manifest consumes the locally built, self-contained payload and is intended
@@ -49,12 +50,12 @@ payload source with reproducible, network-independent source modules.
 It builds for the current machine's architecture and produces:
 
 ```text
-line-gtk-VERSION-ARCH.tar.gz
-line-gtk-VERSION-ARCH.flatpak
+line-rust-VERSION-ARCH.tar.gz
+line-rust-VERSION-ARCH.flatpak
 SHA256SUMS-ARCH
 ```
 
-Outputs default to `/tmp`. Set `LINE_GTK_DIST_DIR` to use another directory.
+Outputs default to `/tmp`. Set `LINE_RUST_DIST_DIR` to use another directory.
 The scripts print the matching `gh release create` command, but do not commit,
 tag, push, or publish anything. Rust and Deno builds enforce their lockfiles;
 update and commit dependency lockfiles before releasing.
@@ -80,7 +81,27 @@ job verifies their checksums and publishes the four packages plus a combined
 built-in `GITHUB_TOKEN`; no personal access token is required.
 
 For this fork, releases are published to
-<https://github.com/urguide/Line-GTK/releases>.
+<https://github.com/urguide/line-rust/releases>.
+
+### License and matching sources
+
+Arch local installs use `aur/PKGBUILD`; `packaging/aur/line-rust/PKGBUILD`
+delegates to that recipe and resolves the latest release and its checksums.
+Generate `.SRCINFO` with `makepkg --printsrcinfo` when preparing an AUR submission.
+The development recipe is under `packaging/aur/line-rust-git`. Renaming this
+repository does not publish or rename any package on the AUR service.
+
+This fork retains the upstream GPL-3.0-or-later license and credits
+[MidnightTale/line-gtk](https://github.com/MidnightTale/line-gtk).
+Both the prebuilt tarball and Flatpak include `LICENSE` and `README.md`, including
+the fork attribution and modification notice.
+
+The publishing workflow adds a direct source archive link for the exact release
+tag to the release notes, alongside the binary downloads. Those tagged project
+sources contain the Rust and protocol code, dependency lockfiles, and build and
+packaging scripts. Third-party components retain their own licenses and notices.
+For manual releases, also include the matching source link in the release notes;
+do not substitute the upstream repository or a moving development branch.
 
 ### First build
 

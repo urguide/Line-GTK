@@ -41,10 +41,10 @@ pub fn show_chat_notification(
     let mut n = Notification::new();
     n.summary(request.title)
         .body(request.body)
-        .appname("LINE GTK")
+        .appname("line-rust")
         .id(notification_id(request.message_id))
         .timeout(Timeout::Milliseconds(12_000))
-        .hint(Hint::DesktopEntry("dev.linegtk.LineGtk".into()))
+        .hint(Hint::DesktopEntry("io.github.urguide.LineRust".into()))
         .hint(Hint::Category("im.received".into()))
         .hint(Hint::Transient(false))
         .action("default", "Open");
@@ -56,7 +56,7 @@ pub fn show_chat_notification(
     if let Some(path) = avatar {
         n.icon(path);
     } else {
-        n.icon("line-gtk");
+        n.icon("line-rust");
     }
 
     if let Some(path) = image {
@@ -66,7 +66,7 @@ pub fn show_chat_notification(
     let handle = n.show().map_err(|e| e.to_string())?;
     let mid = request.chat_mid.to_string();
     std::thread::Builder::new()
-        .name("line-gtk-notify-action".into())
+        .name("line-rust-notify-action".into())
         .spawn(move || {
             handle.wait_for_action(|action| {
                 if action == "default" {

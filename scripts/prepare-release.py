@@ -40,7 +40,7 @@ def update_versions(version, date):
 
     lockfile = Path("Cargo.lock")
     text, count = re.subn(
-        r'(\[\[package\]\]\nname = "line-gtk"\nversion = ")[^"]+(")',
+        r'(\[\[package\]\]\nname = "line-rust"\nversion = ")[^"]+(")',
         lambda match: f"{match[1]}{version}{match[2]}",
         lockfile.read_text(), count=1,
     )
@@ -48,7 +48,7 @@ def update_versions(version, date):
         raise ValueError("Cargo.lock root package version missing")
     lockfile.write_text(text)
 
-    metadata = Path("packaging/flatpak/dev.linegtk.LineGtk.metainfo.xml")
+    metadata = Path("packaging/flatpak/io.github.urguide.LineRust.metainfo.xml")
     text = metadata.read_text()
     entry = (
         f'\n    <release version="{version}" date="{date}">\n'
@@ -94,7 +94,7 @@ def main():
             date = git("show", "-s", "--format=%cI", source)
             update_versions(version, date[:10])
             subprocess.run(["git", "add", "Cargo.toml", "Cargo.lock",
-                            "packaging/flatpak/dev.linegtk.LineGtk.metainfo.xml"], check=True)
+                            "packaging/flatpak/io.github.urguide.LineRust.metainfo.xml"], check=True)
             tree = git("write-tree")
             env = dict(os.environ, GIT_AUTHOR_NAME="github-actions[bot]",
                        GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com",

@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use line_gtk_core::{
+use line_rust_core::{
     store::Store,
     sync::{Command, Engine, Transport},
 };

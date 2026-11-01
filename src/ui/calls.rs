@@ -302,5 +302,5 @@ pub(super) fn notify_call_incoming(state: &AppState, name: &str) {
     let n = gio::Notification::new(&crate::i18n::t("voice_call"));
     n.set_body(Some(&crate::i18n::tf("call_incoming", &[("name", name)])));
     n.set_priority(gio::NotificationPriority::Urgent);
-    state.app.send_notification(Some("line-gtk-call"), &n);
+    state.app.send_notification(Some("line-rust-call"), &n);
 }

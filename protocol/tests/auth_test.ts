@@ -2,7 +2,7 @@ import { assertEquals } from "@std/assert";
 import { AuthStore } from "../src/auth.ts";
 
 Deno.test("auth lifecycle uses private files", async () => {
-  const directory = await Deno.makeTempDir({ prefix: "line-gtk-auth-" });
+  const directory = await Deno.makeTempDir({ prefix: "line-rust-auth-" });
   try {
     const store = new AuthStore(directory);
     assertEquals(await store.loadToken(), null);

@@ -1,5 +1,5 @@
 use anyhow::bail;
-use line_gtk_core::attachments::upload;
+use line_rust_core::attachments::upload;
 use serde_json::json;
 
 #[test]

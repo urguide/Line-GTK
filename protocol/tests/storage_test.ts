@@ -2,7 +2,7 @@ import { assertEquals } from "@std/assert";
 import { atomicWriteJson, ensurePrivateDir } from "../src/storage.ts";
 
 Deno.test("atomic JSON persistence leaves no temporary file", async () => {
-  const directory = await Deno.makeTempDir({ prefix: "line-gtk-storage-" });
+  const directory = await Deno.makeTempDir({ prefix: "line-rust-storage-" });
   try {
     await ensurePrivateDir(directory);
     const path = `${directory}/cache.json`;

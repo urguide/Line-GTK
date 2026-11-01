@@ -26,12 +26,12 @@ class ReleaseTests(unittest.TestCase):
         self.git("init", "-b", "master")
         self.git("config", "user.name", "Test")
         self.git("config", "user.email", "test@example.invalid")
-        (self.repo / "Cargo.toml").write_text('[package]\nname = "line-gtk"\nversion = "0.1.2"\n')
+        (self.repo / "Cargo.toml").write_text('[package]\nname = "line-rust"\nversion = "0.1.2"\n')
         (self.repo / "Cargo.lock").write_text(
-            'version = 4\n[[package]]\nname = "line-gtk"\nversion = "0.1.2"\n'
+            'version = 4\n[[package]]\nname = "line-rust"\nversion = "0.1.2"\n'
             '[[package]]\nname = "other"\nversion = "9.0.0"\n'
         )
-        self.metadata = self.repo / "packaging/flatpak/dev.linegtk.LineGtk.metainfo.xml"
+        self.metadata = self.repo / "packaging/flatpak/io.github.urguide.LineRust.metainfo.xml"
         self.metadata.parent.mkdir(parents=True)
         self.metadata.write_text('<component><releases>\n</releases></component>\n')
         self.commit("chore: initial")

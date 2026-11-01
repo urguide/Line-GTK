@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use async_channel::Sender;
-use line_gtk_core::{
+use line_rust_core::{
     store::Store,
     sync::{Command as CoreCommand, Engine, Transport},
 };
@@ -109,8 +109,8 @@ impl CoreBridge {
             Some("protocol_error") => {
                 let code = response.extra["code"].as_str().unwrap_or_default();
                 let error = response.extra["error"].as_str().unwrap_or("protocol error");
-                if line_gtk_core::session::authentication_failure(code)
-                    || line_gtk_core::session::authentication_failure(error)
+                if line_rust_core::session::authentication_failure(code)
+                    || line_rust_core::session::authentication_failure(error)
                 {
                     if self.failed_generation.swap(generation, Ordering::SeqCst) != generation {
                         // Invalidate queued and in-flight core work immediately,
@@ -392,12 +392,12 @@ impl Ipc {
             .map(PathBuf::from)
             .and_then(|p| self.cached_media_file(&p));
         let attachment_ext =
-            line_gtk_core::attachments::file_extension(row["fileName"].as_str(), "");
+            line_rust_core::attachments::file_extension(row["fileName"].as_str(), "");
         if kind == "VIDEO"
             && file.as_ref().is_some_and(|p| {
                 !p.extension()
                     .and_then(|s| s.to_str())
-                    .is_some_and(line_gtk_core::attachments::video_extension)
+                    .is_some_and(line_rust_core::attachments::video_extension)
             })
         {
             file = None;
@@ -425,7 +425,7 @@ impl Ipc {
                 "bin",
             ] {
                 let candidate = dir.join(format!("{id}.{ext}"));
-                if (kind == "VIDEO" && !line_gtk_core::attachments::video_extension(ext))
+                if (kind == "VIDEO" && !line_rust_core::attachments::video_extension(ext))
                     || (kind == "IMAGE" && !ext.starts_with("full."))
                 {
                     continue;
@@ -449,7 +449,7 @@ impl Ipc {
             }
             let mime = downloaded["mime"].as_str().unwrap_or_default();
             let generic_ext =
-                line_gtk_core::attachments::file_extension(row["fileName"].as_str(), mime);
+                line_rust_core::attachments::file_extension(row["fileName"].as_str(), mime);
             let ext = if kind == "FILE" {
                 generic_ext.as_str()
             } else if mime.contains("png") {
@@ -1288,7 +1288,7 @@ mod tests {
             (1.0, "Sent", true),
             (0.0, "", true),
         ] {
-            ipc.emit(line_gtk_core::attachments::upload_progress(
+            ipc.emit(line_rust_core::attachments::upload_progress(
                 "c-group", progress, label, done,
             ));
             match rx.try_recv().unwrap() {

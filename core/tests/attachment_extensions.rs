@@ -1,4 +1,4 @@
-use line_gtk_core::attachments::file_extension;
+use line_rust_core::attachments::file_extension;
 
 #[test]
 fn document_suffixes_preserve_preview_types_without_using_sender_paths() {

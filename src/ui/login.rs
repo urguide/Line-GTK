@@ -44,7 +44,7 @@ pub fn build_login_page() -> LoginWidgets {
         .build();
 
     let title = gtk::Label::builder()
-        .label("LINE GTK")
+        .label("line-rust")
         .css_classes(["title-1", "line-login-brand"])
         .build();
 

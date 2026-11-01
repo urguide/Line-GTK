@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn chooses_a_non_overwriting_destination() {
         let dir =
-            std::env::temp_dir().join(format!("line-gtk-download-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("line-rust-download-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("photo.jpg"), b"existing").unwrap();

@@ -5,11 +5,11 @@ archive="${1:?usage: check-package.sh ARCHIVE.tar.gz}"
 listing="$(tar -tzf "$archive")"
 
 for required in \
-  /line-gtk \
-  /protocol/line-gtk-protocol \
+  /line-rust \
+  /protocol/line-rust-protocol \
   /assets/lang/eng.json \
   /assets/lang/thai.json \
-  /dev.linegtk.LineGtk.desktop
+  /io.github.urguide.LineRust.desktop
 do
   if ! grep -q "${required}$" <<<"$listing"; then
     echo "missing package entry: $required" >&2

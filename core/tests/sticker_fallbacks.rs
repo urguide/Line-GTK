@@ -1,5 +1,5 @@
 use anyhow::bail;
-use line_gtk_core::stickers;
+use line_rust_core::stickers;
 use serde_json::{Value, json};
 
 fn pack<'a>(result: &'a Value, id: &str) -> Option<&'a Value> {

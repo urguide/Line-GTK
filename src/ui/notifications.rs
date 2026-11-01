@@ -121,12 +121,12 @@ fn send_desktop_notification(state: &AppState, request: ChatNotification<'_>) {
             } else if let Some(path) = request.image_path.filter(|p| Path::new(p).exists()) {
                 notification.set_icon(&gio::FileIcon::new(&gio::File::for_path(path)));
             } else {
-                notification.set_icon(&gio::ThemedIcon::new("line-gtk"));
+                notification.set_icon(&gio::ThemedIcon::new("line-rust"));
             }
             let id = if request.message_id.is_empty() {
-                format!("line-gtk-{}", request.chat_mid)
+                format!("line-rust-{}", request.chat_mid)
             } else {
-                format!("line-gtk-{}", request.message_id)
+                format!("line-rust-{}", request.message_id)
             };
             state.app.send_notification(Some(&id), &notification);
         }

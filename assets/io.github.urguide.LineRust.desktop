@@ -1,10 +1,10 @@
 [Desktop Entry]
-Name=LINE GTK
+Name=line-rust
 Comment=Native unofficial LINE client
-Exec=line-gtk
-Icon=line-gtk
+Exec=line-rust
+Icon=line-rust
 Terminal=false
 Type=Application
 Categories=Network;InstantMessaging;
-StartupWMClass=dev.linegtk.LineGtk
+StartupWMClass=io.github.urguide.LineRust
 StartupNotify=true

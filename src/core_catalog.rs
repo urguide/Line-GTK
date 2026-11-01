@@ -1,7 +1,7 @@
 //! Rust-owned contact/chat/sticker presentation, CDN files and outgoing media staging.
 use crate::core_bridge::Ipc;
 use anyhow::{Context, Result, bail};
-use line_gtk_core::{message::string, sync::Transport};
+use line_rust_core::{message::string, sync::Transport};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -83,7 +83,7 @@ impl Ipc {
         .ok()
     }
     fn sticker(&self, id: &str, animated: bool, generation: u64) -> Result<PathBuf> {
-        use line_gtk_core::sticker_cache::{self, Fetch};
+        use line_rust_core::sticker_cache::{self, Fetch};
         self.active(generation)?;
         let cfg = crate::config::AppConfig::load(&self.data);
         let now = std::time::SystemTime::now()
@@ -118,7 +118,7 @@ impl Ipc {
         result
     }
     fn catalogs(&self, method: &str, previous: &Value, generation: u64) -> Result<Value> {
-        let mut result = line_gtk_core::catalog::load(method, previous, |rpc, args| {
+        let mut result = line_rust_core::catalog::load(method, previous, |rpc, args| {
             self.call(rpc, args, generation)
         })?;
         self.active(generation)?;
@@ -130,7 +130,7 @@ impl Ipc {
         for row in result[key].as_array_mut().into_iter().flatten() {
             if let Some(path) = self.avatar(
                 &string(&row["mid"]),
-                line_gtk_core::catalog::picture(row),
+                line_rust_core::catalog::picture(row),
                 generation,
             ) {
                 row["avatarPath"] = json!(path);
@@ -148,7 +148,7 @@ impl Ipc {
             Ok(p["owned"].clone())
         };
         self.active(generation)?;
-        let mut result = line_gtk_core::stickers::load(
+        let mut result = line_rust_core::stickers::load(
             owned,
             &p["previous"],
             &p["recent"],
@@ -162,14 +162,14 @@ impl Ipc {
                 if path.is_file()
                     && std::fs::read(&path)
                         .ok()
-                        .and_then(|b| line_gtk_core::stickers::metadata(&b).ok())
+                        .and_then(|b| line_rust_core::stickers::metadata(&b).ok())
                         .is_none()
                 {
                     std::fs::remove_file(&path)?;
                 }
                 let downloaded=self.asset(&format!("https://stickershop.line-scdn.net/stickershop/v1/product/{package}/android/productInfo.meta"),&path,generation)?;
                 let bytes = std::fs::read(downloaded)?;
-                if let Err(error) = line_gtk_core::stickers::metadata(&bytes) {
+                if let Err(error) = line_rust_core::stickers::metadata(&bytes) {
                     let _ = std::fs::remove_file(&path);
                     return Err(error);
                 }
@@ -183,14 +183,14 @@ impl Ipc {
                     .into_owned())
             },
         )?;
-        line_gtk_core::stickers::apply_pack_icons(&mut result, |package| {
-            let path = line_gtk_core::sticker_cache::pack_icon(
+        line_rust_core::stickers::apply_pack_icons(&mut result, |package| {
+            let path = line_rust_core::sticker_cache::pack_icon(
                 &self.data.join("cache/stickers"),
                 package,
                 |url, dest| {
                     self.active(generation)?;
                     self.asset(url, dest, generation)?;
-                    Ok(line_gtk_core::sticker_cache::Fetch::Saved)
+                    Ok(line_rust_core::sticker_cache::Fetch::Saved)
                 },
             )?;
             Ok(path.to_string_lossy().into_owned())
@@ -223,13 +223,13 @@ impl Ipc {
         let chat = p["chatMid"].as_str().unwrap_or_default();
         let progress = |fraction, label| -> Result<()> {
             self.active(generation)?;
-            self.emit(line_gtk_core::attachments::upload_progress(
+            self.emit(line_rust_core::attachments::upload_progress(
                 chat, fraction, label, false,
             ));
             Ok(())
         };
         let method =
-            line_gtk_core::attachments::upload_method(p["chatMid"].as_str().unwrap_or_default())?;
+            line_rust_core::attachments::upload_method(p["chatMid"].as_str().unwrap_or_default())?;
         let source = Path::new(p["filePath"].as_str().context("missing attachment")?);
         if !source.is_file() {
             bail!("attachment is not a regular file");
@@ -243,7 +243,7 @@ impl Ipc {
             .and_then(|s| s.to_str())
             .unwrap_or("bin")
             .to_ascii_lowercase();
-        let kind = line_gtk_core::attachments::normalize_media_type(
+        let kind = line_rust_core::attachments::normalize_media_type(
             p["oType"].as_str().unwrap_or("auto"),
             &filename,
         );
@@ -283,7 +283,7 @@ impl Ipc {
                 false
             };
             let duration = if matches!(kind, "audio" | "video") {
-                Some(line_gtk_core::attachments::duration_ms(
+                Some(line_rust_core::attachments::duration_ms(
                     p["durationMs"].as_f64(),
                     || {
                         let output = Command::new(probe_program)
@@ -322,8 +322,8 @@ impl Ipc {
                 p["durationMs"].as_i64()
             };
             progress(0.35, "Uploading…")?;
-            let upload_params = json!({"chatMid":p["chatMid"],"transferName":name,"previewName":if preview_ready{Some(&preview_name)}else{None},"fileName":filename,"extension":ext,"mime":line_gtk_core::attachments::mime(&ext,kind),"oType":kind,"durationMs":duration});
-            let mut result = line_gtk_core::attachments::upload(
+            let upload_params = json!({"chatMid":p["chatMid"],"transferName":name,"previewName":if preview_ready{Some(&preview_name)}else{None},"fileName":filename,"extension":ext,"mime":line_rust_core::attachments::mime(&ext,kind),"oType":kind,"durationMs":duration});
+            let mut result = line_rust_core::attachments::upload(
                 &upload_params,
                 |rpc, params| self.call(rpc, params, generation),
                 || {
@@ -390,7 +390,7 @@ impl Ipc {
         match method {
             "profile_avatar" => {
                 let mid = p["mid"].as_str().context("profile ID missing")?;
-                let picture = line_gtk_core::catalog::picture(&p)
+                let picture = line_rust_core::catalog::picture(&p)
                     .or_else(|| p["pictureUrl"].as_str().filter(|url| !url.is_empty()));
                 if let Some(path) = self.avatar(mid, picture, generation) {
                     self.active(generation)?;
@@ -427,10 +427,10 @@ impl Ipc {
                 Ok(result)
             }
             "mute_chat" => self.call("bridge_mute", p, generation),
-            "send_postback" => line_gtk_core::postback::send(&p, |method, args| {
+            "send_postback" => line_rust_core::postback::send(&p, |method, args| {
                 self.call(method, args, generation)
             }),
-            "add_friend" => line_gtk_core::friends::add(
+            "add_friend" => line_rust_core::friends::add(
                 p["userid"].as_str().unwrap_or_default(),
                 |method, args| self.call(method, args, generation),
             ),

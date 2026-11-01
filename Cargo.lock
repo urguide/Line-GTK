@@ -1721,7 +1721,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "line-gtk"
+name = "line-rust"
 version = "0.1.2"
 dependencies = [
  "anyhow",
@@ -1736,7 +1736,7 @@ dependencies = [
  "image",
  "ksni",
  "libadwaita",
- "line-gtk-core",
+ "line-rust-core",
  "notify-rust",
  "png",
  "qrcode",
@@ -1749,7 +1749,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "line-gtk-core"
+name = "line-rust-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",

@@ -1,4 +1,4 @@
-use line_gtk_core::attachments::{mime, upload_method};
+use line_rust_core::attachments::{mime, upload_method};
 
 #[test]
 fn rooms_and_other_legacy_destinations_use_obs_without_downgrading_e2ee_chats() {

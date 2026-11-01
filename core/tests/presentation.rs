@@ -1,4 +1,4 @@
-use line_gtk_core::{message::normalize, store::Store};
+use line_rust_core::{message::normalize, store::Store};
 use serde_json::json;
 use std::path::Path;
 

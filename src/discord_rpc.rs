@@ -8,11 +8,11 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-/// Public Discord Application (Client) ID for LINE GTK.
-/// Override with Settings or `LINE_GTK_DISCORD_APP_ID`.
+/// Upstream public Discord Application (Client) ID.
+/// Override with Settings or `LINE_RUST_DISCORD_APP_ID`.
 pub const DEFAULT_APP_ID: &str = "1533109311545278554";
 
-const GITHUB_URL: &str = "https://github.com/MidnightTale/line-gtk";
+const GITHUB_URL: &str = "https://github.com/urguide/line-rust";
 const RECV_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,7 +249,7 @@ fn handle_cmd(
 
 fn apply_presence(client: &mut DiscordIpcClient, presence: &Presence) -> Result<(), String> {
     let mut act = activity::Activity::new()
-        .name("LINE GTK")
+        .name("line-rust")
         .activity_type(activity::ActivityType::Playing)
         .details(presence.details.as_str())
         .state(presence.state.as_str())

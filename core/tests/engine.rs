@@ -1,5 +1,5 @@
 use anyhow::Result;
-use line_gtk_core::{
+use line_rust_core::{
     store::Store,
     sync::{Command, Engine, Transport},
 };
@@ -106,11 +106,11 @@ fn forced_catalog_refresh_receives_stale_cache_and_postback_fallback_is_persiste
             match method {
                 "list_chats" => {
                     assert_eq!(p["previous"]["chats"][0]["name"], "Saved");
-                    line_gtk_core::catalog::load(method, &p["previous"], |_, _| {
+                    line_rust_core::catalog::load(method, &p["previous"], |_, _| {
                         anyhow::bail!("offline")
                     })
                 }
-                "send_postback" => line_gtk_core::postback::send(&p, |rpc, _| {
+                "send_postback" => line_rust_core::postback::send(&p, |rpc, _| {
                     if rpc == "bridge_postback" {
                         anyhow::bail!("unsupported");
                     }
@@ -207,7 +207,7 @@ fn sticker_refresh_keeps_cached_pack_and_partial_result_retries_without_force() 
                 "Saved"
             );
             let attempt = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            line_gtk_core::stickers::load(
+            line_rust_core::stickers::load(
                 Ok(json!({"productList":[{"id":"1"},{"id":"2"}]})),
                 &p["previous"],
                 &p["recent"],

@@ -222,11 +222,11 @@ mod tests {
     #[test]
     fn parses_event_envelope_and_extra_fields() {
         let response: Response =
-            serde_json::from_str(r#"{"event":"ready","hasAuth":true,"dataDir":"/tmp/line-gtk"}"#)
+            serde_json::from_str(r#"{"event":"ready","hasAuth":true,"dataDir":"/tmp/line-rust"}"#)
                 .unwrap();
         assert_eq!(response.event.as_deref(), Some("ready"));
         assert_eq!(response.extra["hasAuth"], true);
-        assert_eq!(response.extra["dataDir"], "/tmp/line-gtk");
+        assert_eq!(response.extra["dataDir"], "/tmp/line-rust");
     }
 
     #[test]

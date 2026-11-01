@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use line_gtk_core::{
+use line_rust_core::{
     friends,
     store::Store,
     sync::{Command, Engine, Transport},
@@ -108,7 +108,7 @@ impl Transport for Fake {
                 })
             }),
             "list_friends" => {
-                line_gtk_core::catalog::load(method, &p["previous"], |_, _| bail!("offline"))
+                line_rust_core::catalog::load(method, &p["previous"], |_, _| bail!("offline"))
             }
             _ => panic!("unexpected {method}"),
         }

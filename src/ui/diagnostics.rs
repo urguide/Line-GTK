@@ -120,7 +120,7 @@ pub fn open(parent: &impl IsA<gtk::Window>, sidecar: Rc<Sidecar>, data_dir: &Pat
     ));
     paths.add(&row(
         &crate::i18n::t("diagnostics_log"),
-        &data_dir.join("line-gtk.log").display().to_string(),
+        &data_dir.join("line-rust.log").display().to_string(),
     ));
     page.add(&paths);
 

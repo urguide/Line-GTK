@@ -12,10 +12,10 @@ case "$ARCH" in
   x86_64|aarch64) ;;
   *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
-DIST_DIR="${LINE_GTK_DIST_DIR:-/tmp}"
+DIST_DIR="${LINE_RUST_DIST_DIR:-/tmp}"
 mkdir -p "$DIST_DIR"
 DIST_DIR="$(cd "$DIST_DIR" && pwd)"
-STAGE="line-gtk-${VER}-${ARCH}"
+STAGE="line-rust-${VER}-${ARCH}"
 OUT_DIR="${DIST_DIR}/${STAGE}"
 OUT_TAR="${DIST_DIR}/${STAGE}.tar.gz"
 
@@ -25,14 +25,14 @@ cargo build --locked --release
 echo "==> staging ${OUT_DIR}"
 rm -rf "$OUT_DIR" "$OUT_TAR"
 mkdir -p "$OUT_DIR"
-cp -a target/release/line-gtk "$OUT_DIR/"
+cp -a target/release/line-rust "$OUT_DIR/"
 mkdir -p "$OUT_DIR/protocol"
 # Copy only distributable sources, never local sessions or dependency caches.
 cp -a protocol/src protocol/vendor protocol/deno.json protocol/deno.lock "$OUT_DIR/protocol/"
 cp -a assets "$OUT_DIR/"
 echo "==> compiling offline protocol sidecar"
-./scripts/build-sidecar.sh "$OUT_DIR/protocol/line-gtk-protocol"
-cp -a packaging/dev.linegtk.LineGtk.desktop README.md LICENSE "$OUT_DIR/"
+./scripts/build-sidecar.sh "$OUT_DIR/protocol/line-rust-protocol"
+cp -a packaging/io.github.urguide.LineRust.desktop README.md LICENSE "$OUT_DIR/"
 
 echo "==> packing ${OUT_TAR}"
 tar -C "$DIST_DIR" -czf "$OUT_TAR" "$STAGE"
