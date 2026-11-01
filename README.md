@@ -78,17 +78,20 @@ restoring rejected ownership. Failed sends never persist a successful message.
 All retention modes share `core/src/cache_policy.rs`; changes in Settings are
 sent immediately to the Rust worker and rechecked on subsequent requests.
 
-| Mode | Latest message page | Chat list | Friends | Owned sticker packs | Disk chats/messages |
-| --- | --- | --- | --- | --- | --- |
-| Smart | 20 min | 30 min | 30 min | 1 day | 360 days |
-| Day | 15 min | 30 min | 30 min | 1 day | 1 day |
-| Week | 30 min | 60 min | 120 min | 7 days | 7 days |
-| Month | 60 min | 120 min | 360 min | 30 days | 30 days |
-| Forever | 120 min | 360 min | 360 min | 7 days | Unlimited |
+| Mode | Latest message page | Chat list | Friends | Owned sticker packs | Disk chat lists | Disk messages |
+| --- | --- | --- | --- | --- | --- | --- |
+| Smart (default) | 20 min | 30 min | 30 min | 1 day | 360 days | Unlimited |
+| Day | 15 min | 30 min | 30 min | 1 day | 1 day | 1 day |
+| Week | 30 min | 60 min | 120 min | 7 days | 7 days | 7 days |
+| Month | 60 min | 120 min | 360 min | 30 days | 30 days | 30 days |
+| Forever | 120 min | 360 min | 360 min | 7 days | Unlimited | Unlimited |
 
 Freshness expiry triggers a refresh; disk retention controls how long saved
 history and stale list fallbacks remain usable. Invalidating freshness does not
 reset a catalog's disk age. SQLite upgrades preserve existing catalog rows.
+Smart and Forever preserve saved messages and history pages indefinitely and
+skip age-based cleanup scans on writes. Explicit clearing and message withdrawal
+still remove messages. Day/Week/Month retain their opt-in expiry limits.
 Clearing Chats deletes the current account's chat and friend catalog rows,
 including stale fallbacks; clearing All also removes its messages/pages/gaps.
 Catalogs from other accounts remain intact. A failed refresh or restart cannot
@@ -133,6 +136,13 @@ Video cache reuse supports MP4, WebM, MOV, MKV and M4V originals, with their
 existing thumbnails. Both saved paths and legacy filename discovery validate
 nonempty regular files inside the media cache (including symlink resolution),
 so reopening a cached non-MP4 video does not request another download.
+Image/video originals and thumbnails are stored under `cache/media/<chat MID>/`,
+using the group MID for groups and the peer MID for direct chats. Names start with
+the message's UTC timestamp and end with its ID, for example
+`2026-11-01_093015_123_456.full.jpg`, `2026-11-01_093015_123_456.mp4`, and
+`2026-11-01_093015_123_456.thumb.jpg`. Missing/invalid timestamps use the Unix
+epoch rather than download time. Existing flat caches are copied locally on
+access, with SQLite paths updated; old copies remain valid until cache clearing.
 Generic attachments retain a short ASCII basename extension (for example
 `123.pdf` or `123.txt`) so existing file viewers receive a usable preview path.
 Sender-controlled directory components are never used in cache paths; missing
@@ -155,7 +165,9 @@ and directs the adapter to stop listening and clear authentication state.
 
 - [x] QR login (additional device)
 - [x] Chats, messages, stickers, friends
-- [x] 20-message history pages on upward scroll, merged disk cache (360 days in Smart mode)
+- [x] Right-click to pin/unpin chats; account-local pins survive restart and stay above other chats, with recent activity first within each section
+- [x] Right-click to mute or hide users/groups; hidden chats stay out of the sidebar and tray until restored from Settings → Hidden chats (multi-select). Hiding and notification mute are independent; group mute is local, while DM mute syncs with LINE.
+- [x] 20-message history pages on upward scroll, permanent merged message history in Smart mode
 - [x] Background gap repair on opening a chat, with persisted progress and serial 20-message requests
 - [x] Shared serial media download queue with a 500 ms gap between tasks
 - [x] Right-click Reply with a quoted-message preview

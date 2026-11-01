@@ -1,4 +1,4 @@
-//! Single source of truth for the original retention modes (milliseconds).
+//! Single source of truth for cache freshness and disk retention (milliseconds).
 pub const MINUTE: i64 = 60_000;
 pub const DAY: i64 = 86_400_000;
 pub const WEEK: i64 = 7 * DAY;
@@ -16,19 +16,24 @@ pub struct CachePolicy {
 }
 impl CachePolicy {
     pub fn for_mode(mode: &str) -> Self {
-        let (disk, owned, chats, messages, contacts, animation) =
-            match mode.trim().to_ascii_lowercase().as_str() {
-                "day" => (DAY, DAY, 30, 15, 30, Some(DAY as u64)),
-                "week" => (WEEK, WEEK, 60, 30, 120, Some(WEEK as u64)),
-                "month" => (MONTH, MONTH, 120, 60, 360, Some(MONTH as u64)),
-                "forever" => (i64::MAX, WEEK, 360, 120, 360, None),
-                _ => (360 * DAY, DAY, 30, 20, 30, Some(WEEK as u64)),
-            };
+        let mode = mode.trim().to_ascii_lowercase();
+        let (disk, owned, chats, messages, contacts, animation) = match mode.as_str() {
+            "day" => (DAY, DAY, 30, 15, 30, Some(DAY as u64)),
+            "week" => (WEEK, WEEK, 60, 30, 120, Some(WEEK as u64)),
+            "month" => (MONTH, MONTH, 120, 60, 360, Some(MONTH as u64)),
+            "forever" => (i64::MAX, WEEK, 360, 120, 360, None),
+            _ => (360 * DAY, DAY, 30, 20, 30, Some(WEEK as u64)),
+        };
         Self {
             messages: messages * MINUTE,
             chats: chats * MINUTE,
             contacts: contacts * MINUTE,
-            disk_messages: disk,
+            // Smart keeps local history permanently while still refreshing
+            // server snapshots frequently. Unknown modes use Smart defaults.
+            disk_messages: match mode.as_str() {
+                "day" | "week" | "month" => disk,
+                _ => i64::MAX,
+            },
             disk_chats: disk,
             owned_stickers: owned,
             animation_miss: animation,

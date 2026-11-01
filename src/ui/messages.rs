@@ -1387,7 +1387,10 @@ pub(super) fn filter_chats(state: &AppState, query: &str) {
                 })
                 .unwrap_or(true)
         };
-        row.set_visible(visible);
+        let hidden = chats
+            .get(idx as usize)
+            .is_some_and(|chat| chat_is_hidden(state, &chat.mid));
+        row.set_visible(visible && !hidden);
         idx += 1;
     }
 }

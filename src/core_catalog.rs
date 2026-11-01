@@ -247,6 +247,13 @@ impl Ipc {
             p["oType"].as_str().unwrap_or("auto"),
             &filename,
         );
+        // Validate the destination before uploading anything to the server.
+        let content_type = if kind == "gif" {
+            "IMAGE".to_owned()
+        } else {
+            kind.to_ascii_uppercase()
+        };
+        self.media_cache_layout(&json!({"id":"0","chatMid":chat,"contentType":content_type}))?;
         let dir = self.data.join("cache/transfer");
         crate::config::ensure_private_dir(&dir)?;
         let token = self.ids.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -358,16 +365,20 @@ impl Ipc {
             }
             let id = string(&result["rawMessage"]["id"]);
             numeric(&id)?;
-            let dest = self.data.join("cache/media").join(format!("{id}.{ext}"));
-            crate::config::ensure_private_dir(dest.parent().unwrap())?;
+            let mut cache_row = result["rawMessage"].clone();
+            cache_row["id"] = json!(id);
+            cache_row["chatMid"] = json!(chat);
+            let (media_dir, stem) = self.media_cache_layout(&cache_row)?;
+            let dest = media_dir.join(if matches!(kind, "image" | "gif") {
+                format!("{stem}.full.{ext}")
+            } else {
+                format!("{stem}.{ext}")
+            });
             std::fs::rename(&staged, &dest)?;
             result["filePath"] = json!(dest);
             result["fileName"] = json!(filename);
             if preview_ready {
-                let thumb = self
-                    .data
-                    .join("cache/media")
-                    .join(format!("{id}.thumb.jpg"));
+                let thumb = media_dir.join(format!("{stem}.thumb.jpg"));
                 std::fs::rename(&preview, &thumb)?;
                 result["imagePath"] = json!(thumb);
             }

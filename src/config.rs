@@ -1,6 +1,7 @@
 use gtk::CssProvider;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,12 @@ pub struct AppConfig {
     pub auto_mark_read: bool,
     /// Last opened chat mid (restored on launch).
     pub last_chat_mid: String,
+    /// Locally pinned chats, keyed by the signed-in account MID.
+    pub pinned_chats: BTreeMap<String, BTreeSet<String>>,
+    /// Local notification mute for group/room chats (DM mute is synced with LINE).
+    pub muted_chats: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Hidden chat snapshots allow restoring even after catalog cache expiry.
+    pub hidden_chats: BTreeMap<String, BTreeMap<String, crate::protocol::ChatInfo>>,
     /// PulseAudio / PipeWire source name, or empty / "default".
     pub audio_input: String,
     /// PulseAudio / PipeWire sink name, or empty / "default".
@@ -76,6 +83,9 @@ impl Default for AppConfig {
             notification_sound_volume: 1.0,
             auto_mark_read: true,
             last_chat_mid: String::new(),
+            pinned_chats: BTreeMap::new(),
+            muted_chats: BTreeMap::new(),
+            hidden_chats: BTreeMap::new(),
             audio_input: String::new(),
             audio_output: String::new(),
             call_mic_volume: 1.0,
@@ -100,6 +110,20 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn chat_is_hidden(&self, account: Option<&str>, mid: &str) -> bool {
+        account
+            .and_then(|account| self.hidden_chats.get(account))
+            .is_some_and(|chats| chats.contains_key(mid))
+    }
+
+    pub fn chat_is_muted(&self, account: Option<&str>, mid: &str, server_muted: bool) -> bool {
+        account
+            .and_then(|account| self.muted_chats.get(account))
+            .and_then(|chats| chats.get(mid))
+            .copied()
+            .unwrap_or(server_muted)
+    }
+
     pub fn path(data_dir: &std::path::Path) -> PathBuf {
         data_dir.join("settings.json")
     }
@@ -289,9 +313,41 @@ mod tests {
             std::thread::current().name().unwrap_or("unnamed")
         ));
         let _ = fs::remove_dir_all(&dir);
-        let cfg = AppConfig::default();
+        let mut cfg = AppConfig::default();
+        cfg.pinned_chats.insert(
+            "account-a".into(),
+            BTreeSet::from(["group-chat".into(), "user-chat".into()]),
+        );
+        cfg.pinned_chats
+            .insert("account-b".into(), BTreeSet::from(["other-chat".into()]));
+        cfg.muted_chats.insert(
+            "account-a".into(),
+            BTreeMap::from([("group-chat".into(), true)]),
+        );
+        let hidden: crate::protocol::ChatInfo = serde_json::from_value(serde_json::json!({
+            "mid": "group-chat", "name": "Hidden group", "kind": "group", "lastActivity": 123,
+        }))
+        .unwrap();
+        cfg.hidden_chats.insert(
+            "account-a".into(),
+            BTreeMap::from([("group-chat".into(), hidden)]),
+        );
         cfg.save_atomic(&dir).expect("save settings");
-        assert_eq!(AppConfig::load(&dir).language, cfg.language);
+        let restored = AppConfig::load(&dir);
+        assert_eq!(restored.language, cfg.language);
+        assert_eq!(restored.pinned_chats, cfg.pinned_chats);
+        assert!(restored.chat_is_muted(Some("account-a"), "group-chat", false));
+        assert!(restored.chat_is_hidden(Some("account-a"), "group-chat"));
+        assert_eq!(
+            restored.hidden_chats["account-a"]["group-chat"].name,
+            "Hidden group"
+        );
+        assert_eq!(
+            restored.hidden_chats["account-a"]["group-chat"].last_activity,
+            123
+        );
+        assert!(!restored.chat_is_hidden(Some("account-b"), "group-chat"));
+        assert!(!restored.chat_is_muted(Some("account-b"), "group-chat", false));
         assert!(!dir.join(".settings.json.tmp").exists());
         #[cfg(unix)]
         {
@@ -310,6 +366,32 @@ mod tests {
             );
         }
         fs::remove_dir_all(dir).expect("remove test directory");
+    }
+
+    #[test]
+    fn old_settings_start_without_chat_preferences() {
+        let cfg: AppConfig = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert!(cfg.pinned_chats.is_empty());
+        assert!(cfg.hidden_chats.is_empty());
+        assert!(cfg.muted_chats.is_empty());
+        assert_eq!(cfg.language, "en");
+    }
+
+    #[test]
+    fn local_mute_overrides_server_state_only_for_its_account() {
+        let mut cfg = AppConfig::default();
+        cfg.muted_chats
+            .insert("a".into(), BTreeMap::from([("group".into(), true)]));
+        assert!(cfg.chat_is_muted(Some("a"), "group", false));
+        assert!(!cfg.chat_is_muted(Some("b"), "group", false));
+        assert!(!cfg.chat_is_muted(None, "group", false));
+        assert!(cfg.chat_is_muted(Some("a"), "user", true));
+        cfg.muted_chats
+            .get_mut("a")
+            .unwrap()
+            .insert("group".into(), false);
+        assert!(!cfg.chat_is_muted(Some("a"), "group", true));
+        assert!(cfg.chat_is_muted(Some("b"), "group", true));
     }
 }
 

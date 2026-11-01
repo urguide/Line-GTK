@@ -18,6 +18,8 @@ pub struct SettingsDeps {
     pub on_experimental_calls: Rc<dyn Fn(bool)>,
     pub on_tray_settings: Rc<dyn Fn()>,
     pub on_discord_rpc: Rc<dyn Fn()>,
+    pub hidden_chats: Vec<crate::protocol::ChatInfo>,
+    pub on_unhide: Rc<dyn Fn(Vec<String>) -> bool>,
     pub toast: Rc<dyn Fn(&str)>,
 }
 
@@ -658,6 +660,83 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
     features.add(&exp_grp);
     features.add(&calls_grp);
     win.add(&features);
+
+    let hidden_page = libadwaita::PreferencesPage::builder()
+        .title(i18n::t("hidden_chats"))
+        .icon_name("view-conceal-symbolic")
+        .build();
+    let hidden_group = libadwaita::PreferencesGroup::builder()
+        .title(i18n::t("hidden_chats"))
+        .description(i18n::t("hidden_chats_desc"))
+        .build();
+    let empty_hidden = libadwaita::ActionRow::builder()
+        .title(i18n::t("no_hidden_chats"))
+        .visible(deps.hidden_chats.is_empty())
+        .build();
+    hidden_group.add(&empty_hidden);
+    let restore = gtk::Button::builder()
+        .label(i18n::t("unhide_selected"))
+        .sensitive(false)
+        .valign(gtk::Align::Center)
+        .css_classes(["suggested-action"])
+        .build();
+    hidden_group.set_header_suffix(Some(&restore));
+    let selection = Rc::new(RefCell::new(std::collections::BTreeSet::<String>::new()));
+    let rows = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
+    let mut hidden_chats = deps.hidden_chats.clone();
+    hidden_chats.sort_by_key(|chat| (chat.name.to_lowercase(), chat.mid.clone()));
+    for chat in hidden_chats {
+        let row = libadwaita::ActionRow::builder()
+            .title(if chat.name.is_empty() {
+                &chat.mid
+            } else {
+                &chat.name
+            })
+            .subtitle(&chat.mid)
+            .use_markup(false)
+            .build();
+        let check = gtk::CheckButton::new();
+        row.add_prefix(&check);
+        row.set_activatable_widget(Some(&check));
+        let selected = selection.clone();
+        let restore = restore.downgrade();
+        let mid = chat.mid.clone();
+        check.connect_toggled(move |check| {
+            let mut selected = selected.borrow_mut();
+            if check.is_active() {
+                selected.insert(mid.clone());
+            } else {
+                selected.remove(&mid);
+            }
+            if let Some(restore) = restore.upgrade() {
+                restore.set_sensitive(!selected.is_empty());
+            }
+        });
+        hidden_group.add(&row);
+        rows.borrow_mut().insert(chat.mid, row);
+    }
+    {
+        let group = hidden_group.downgrade();
+        let on_unhide = deps.on_unhide.clone();
+        restore.connect_clicked(move |button| {
+            let mids: Vec<_> = selection.borrow().iter().cloned().collect();
+            if !on_unhide(mids.clone()) {
+                return;
+            }
+            if let Some(group) = group.upgrade() {
+                for mid in mids {
+                    if let Some(row) = rows.borrow_mut().remove(&mid) {
+                        group.remove(&row);
+                    }
+                }
+            }
+            selection.borrow_mut().clear();
+            button.set_sensitive(false);
+            empty_hidden.set_visible(rows.borrow().is_empty());
+        });
+    }
+    hidden_page.add(&hidden_group);
+    win.add(&hidden_page);
 
     // ---- Downloads ----
     let downloads_page = libadwaita::PreferencesPage::builder()

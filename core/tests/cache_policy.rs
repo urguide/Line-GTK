@@ -37,7 +37,7 @@ fn page() -> Page {
 }
 
 #[test]
-fn every_mode_preserves_original_freshness_and_retention_values() {
+fn every_mode_uses_expected_freshness_and_retention_values() {
     for (mode, messages, chats, contacts, disk, owned, miss) in [
         ("smart", 20, 30, 30, 360 * DAY, DAY, Some(WEEK as u64)),
         ("day", 15, 30, 30, DAY, DAY, Some(DAY as u64)),
@@ -49,7 +49,7 @@ fn every_mode_preserves_original_freshness_and_retention_values() {
         assert_eq!(p.messages, messages * MINUTE);
         assert_eq!(p.chats, chats * MINUTE);
         assert_eq!(p.contacts, contacts * MINUTE);
-        assert_eq!(p.disk_messages, disk);
+        assert_eq!(p.disk_messages, if mode == "smart" { i64::MAX } else { disk });
         assert_eq!(p.disk_chats, disk);
         assert_eq!(p.owned_stickers, owned);
         assert_eq!(p.animation_miss, miss);
@@ -108,7 +108,10 @@ fn sqlite_freshness_expires_at_exact_boundary_and_invalidation_keeps_disk_age() 
                     .unwrap()
                     .is_none()
             );
-            // Legacy disk messages use age > TTL (inclusive boundary).
+        }
+        if p.disk_messages != i64::MAX {
+            time.store(START + p.disk_messages, Ordering::SeqCst);
+            // Disk messages use age > TTL (inclusive boundary).
             assert!(store.message("chat", "1").unwrap().is_some());
             time.store(START + p.disk_messages + 1, Ordering::SeqCst);
             assert!(store.message("chat", "1").unwrap().is_none());
@@ -116,6 +119,57 @@ fn sqlite_freshness_expires_at_exact_boundary_and_invalidation_keeps_disk_age() 
             time.store(i64::MAX - 1, Ordering::SeqCst);
             assert!(store.message("chat", "1").unwrap().is_some());
         }
+    }
+}
+
+#[test]
+fn permanent_history_survives_new_writes_and_restart_but_allows_explicit_removal() {
+    for mode in ["smart", "forever", "day", "week", "month"] {
+        let path = std::env::temp_dir().join(format!(
+            "line-permanent-history-{}-{mode}.sqlite",
+            std::process::id()
+        ));
+        let time = Arc::new(AtomicI64::new(START));
+        let clock = time.clone();
+        let mut store =
+            Store::open_with_clock(&path, Arc::new(move || clock.load(Ordering::SeqCst)))
+                .unwrap();
+        store.set_account("me");
+        store.set_retention(mode);
+        let before = Cursor {
+            message_id: "2".into(),
+            delivered_time: "2".into(),
+        };
+        store.save_page("chat", Some(&before), &page()).unwrap();
+        time.store(START + 10 * 365 * DAY, Ordering::SeqCst);
+        store
+            .save_messages("other-chat", &[json!({"id":"3","createdTime":3})])
+            .unwrap();
+        drop(store);
+
+        let mut store =
+            Store::open_with_clock(&path, Arc::new(move || time.load(Ordering::SeqCst)))
+                .unwrap();
+        store.set_account("me");
+        // Read with unlimited retention to verify whether cleanup actually
+        // deleted the old rows, rather than merely filtering them by age.
+        store.set_retention("forever");
+        let saved = store.page("chat", Some(&before), 0).unwrap();
+        if matches!(mode, "smart" | "forever") {
+            assert_eq!(saved.unwrap().messages[0]["id"], "1", "{mode}");
+            store.unsend("chat", "1").unwrap();
+            assert!(store.message("chat", "1").unwrap().is_none());
+            store.save_messages("chat", &page().messages).unwrap();
+            assert!(store.message("chat", "1").unwrap().is_none());
+        } else {
+            assert!(saved.is_none(), "{mode}");
+            assert!(store.message("chat", "1").unwrap().is_none());
+        }
+        assert!(store.message("other-chat", "3").unwrap().is_some());
+        store.clear().unwrap();
+        assert!(store.message("other-chat", "3").unwrap().is_none());
+        drop(store);
+        std::fs::remove_file(path).unwrap();
     }
 }
 

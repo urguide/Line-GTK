@@ -497,6 +497,7 @@ fn refresh_tray_menu(state: &AppState) {
     chats.sort_by_key(|chat| std::cmp::Reverse(chat.last_activity));
     let recent: Vec<crate::tray::TrayChatItem> = chats
         .into_iter()
+        .filter(|chat| !chat_is_hidden(state, &chat.mid))
         .take(8)
         .map(|c| crate::tray::TrayChatItem {
             mid: c.mid,
@@ -1298,6 +1299,7 @@ fn wire_actions(state: &AppState) {
         drop(chats);
         open_chat(&s, &chat);
     });
+    wire_chat_context_menu(state);
 
     let s = state.clone();
     state.login.retry_btn.connect_clicked(move |_| {
@@ -1306,10 +1308,36 @@ fn wire_actions(state: &AppState) {
 
     let s = state.clone();
     state.settings_btn.connect_clicked(move |_| {
+        let account = s.self_mid.borrow().clone();
+        let mut hidden_chats: Vec<_> = account
+            .as_ref()
+            .and_then(|account| s.config.borrow().hidden_chats.get(account).cloned())
+            .unwrap_or_default()
+            .into_values()
+            .collect();
+        for chat in &mut hidden_chats {
+            if let Some(current) = s
+                .chats
+                .borrow()
+                .iter()
+                .find(|current| current.mid == chat.mid)
+            {
+                *chat = current.clone();
+            }
+        }
         let deps = settings::SettingsDeps {
             sidecar: s.sidecar.clone(),
             data_dir: s.data_dir.clone(),
             config: s.config.clone(),
+            hidden_chats,
+            on_unhide: {
+                let s2 = s.clone();
+                Rc::new(move |mids| {
+                    account
+                        .as_ref()
+                        .is_some_and(|account| unhide_chats(&s2, account, &mids))
+                })
+            },
             on_logout: {
                 let s2 = s.clone();
                 Rc::new(move || {
@@ -1571,9 +1599,8 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
         .set_text(&crate::i18n::tf("chat_prefix", &[("name", &chat.name)]));
     // Voice calls are 1:1 user chats only (bots/groups unsupported).
     refresh_call_controls(state);
-    let can_mute = chat.mid.starts_with('u');
-    state.mute_btn.set_sensitive(can_mute);
-    update_mute_btn(state, chat.muted);
+    state.mute_btn.set_sensitive(true);
+    update_mute_btn(state, chat_is_muted(state, &chat.mid));
     state.media_queue.borrow_mut().clear();
     set_msg_state(state, "loading", None);
     clear_messages(state);

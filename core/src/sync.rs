@@ -226,9 +226,12 @@ impl<T: Transport> Engine<T> {
 
     fn media(&mut self, chat: &str, row: Value, generation: u64) -> Result<Value> {
         self.pace(self.last_media, self.media_pause, generation)?;
-        let Some(current) = self.store.message(chat, id(&row))? else {
+        let Some(mut current) = self.store.message(chat, id(&row))? else {
             bail!("message unavailable");
         };
+        // Use the authoritative conversation, not the sender (or our own MID
+        // in incoming direct messages), when choosing a media cache directory.
+        current["chatMid"] = json!(chat);
         let result = self.transport.materialize(&current, generation);
         self.last_media = Some(Instant::now());
         self.valid(generation)?;

@@ -369,6 +369,68 @@ impl Transport for Ipc {
 }
 
 impl Ipc {
+    /// Stable UTC names keep lexical ordering chronological across time zones.
+    /// Missing legacy timestamps use the epoch, never the time of download.
+    pub(crate) fn media_cache_layout(&self, row: &Value) -> Result<(PathBuf, String)> {
+        let id = row["id"].as_str().context("media ID missing")?;
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+            bail!("invalid media ID");
+        }
+        let root = self.data.join("cache/media");
+        if !matches!(row["contentType"].as_str(), Some("IMAGE" | "VIDEO")) {
+            crate::config::ensure_private_dir(&root)?;
+            return Ok((root, id.to_owned()));
+        }
+        let chat = row["chatMid"].as_str().context("media chat MID missing")?;
+        if chat.is_empty() || chat.len() > 128 || !chat.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            bail!("invalid media chat MID");
+        }
+        crate::config::ensure_private_dir(&root)?;
+        let dir = root.join(chat);
+        if let Ok(metadata) = std::fs::symlink_metadata(&dir)
+            && (!metadata.is_dir() || metadata.file_type().is_symlink())
+        {
+            bail!("invalid media chat directory");
+        }
+        crate::config::ensure_private_dir(&dir)?;
+        let time = chrono::DateTime::from_timestamp_millis(line_rust_core::message::integer(
+            &row["createdTime"],
+        ))
+        .filter(|time| (0..=9999).contains(&chrono::Datelike::year(time)))
+        .unwrap_or(chrono::DateTime::UNIX_EPOCH);
+        Ok((dir, format!("{}_{id}", time.format("%Y-%m-%d_%H%M%S_%3f"))))
+    }
+
+    /// Keep old paths readable for already-rendered messages and other accounts.
+    /// Publish the migrated copy atomically, then let Engine persist the new path.
+    fn adopt_cached_media(&self, source: &Path, dest: &Path) -> Result<PathBuf> {
+        if let Some(existing) = self.cached_media_file(dest) {
+            return Ok(existing);
+        }
+        static COPIES: AtomicU64 = AtomicU64::new(0);
+        let temporary = dest.with_extension(format!(
+            "migrating-{}-{}",
+            std::process::id(),
+            COPIES.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let result = (|| {
+            let mut input = std::fs::File::open(source)?;
+            std::io::copy(&mut input, &mut output)?;
+            drop(output);
+            std::fs::rename(&temporary, dest)?;
+            self.cached_media_file(dest)
+                .context("invalid migrated media")
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
+    }
+
     fn materialize_with_preview(
         &self,
         row: &Value,
@@ -385,8 +447,8 @@ impl Ipc {
             return self.sticker_media(row, generation);
         }
         let mut updated = row.clone();
-        let dir = self.data.join("cache/media");
-        crate::config::ensure_private_dir(&dir)?;
+        let (dir, stem) = self.media_cache_layout(row)?;
+        let legacy_dir = self.data.join("cache/media");
         let mut file = row["filePath"]
             .as_str()
             .map(PathBuf::from)
@@ -416,15 +478,19 @@ impl Ipc {
                 "mkv",
                 "m4v",
                 "full.jpg",
+                "full.jpeg",
                 "full.png",
                 "full.webp",
                 "full.gif",
+                "full.bmp",
+                "full.heic",
+                "full.bin",
                 "m4a",
                 "mp3",
                 "ogg",
                 "bin",
             ] {
-                let candidate = dir.join(format!("{id}.{ext}"));
+                let candidate = dir.join(format!("{stem}.{ext}"));
                 if (kind == "VIDEO" && !line_rust_core::attachments::video_extension(ext))
                     || (kind == "IMAGE" && !ext.starts_with("full."))
                 {
@@ -435,6 +501,30 @@ impl Ipc {
                     break;
                 }
             }
+        }
+        if file.is_none() && matches!(kind, "IMAGE" | "VIDEO") {
+            // Pre-MID caches (including originals uploaded without .full.).
+            let extensions: &[&str] = if kind == "IMAGE" {
+                &[
+                    "full.jpg",
+                    "full.jpeg",
+                    "full.png",
+                    "full.webp",
+                    "full.gif",
+                    "jpg",
+                    "jpeg",
+                    "png",
+                    "webp",
+                    "gif",
+                    "bmp",
+                    "heic",
+                ]
+            } else {
+                &line_rust_core::attachments::VIDEO_EXTENSIONS
+            };
+            file = extensions
+                .iter()
+                .find_map(|ext| self.cached_media_file(&legacy_dir.join(format!("{id}.{ext}"))));
         }
         if file.is_none() {
             let downloaded = self.call("bridge_download", json!({"message":row}), generation)?;
@@ -480,14 +570,26 @@ impl Ipc {
                 bail!("invalid media extension");
             }
             let dest = dir.join(if kind == "IMAGE" {
-                format!("{id}.full.{ext}")
+                format!("{stem}.full.{ext}")
             } else {
-                format!("{id}.{ext}")
+                format!("{stem}.{ext}")
             });
             std::fs::rename(temporary, &dest)?;
             file = Some(dest);
         }
         let mut file = file.context("media unavailable")?;
+        if matches!(kind, "IMAGE" | "VIDEO") {
+            let ext = line_rust_core::attachments::file_extension(
+                file.file_name().and_then(|name| name.to_str()),
+                "",
+            );
+            let dest = dir.join(if kind == "IMAGE" {
+                format!("{stem}.full.{ext}")
+            } else {
+                format!("{stem}.{ext}")
+            });
+            file = self.adopt_cached_media(&file, &dest)?;
+        }
         // Repair older .bin downloads locally so PDF/text preview works without
         // re-fetching the original. Rename replaces symlinks, never follows them.
         if kind == "FILE"
@@ -507,8 +609,23 @@ impl Ipc {
                 updated["imagePath"] = json!(file);
             }
             "IMAGE" | "VIDEO" => {
-                let thumb = dir.join(format!("{id}.thumb.jpg"));
+                let thumb = dir.join(format!("{stem}.thumb.jpg"));
                 let preview = self.cached_media_file(&thumb).map(Ok).unwrap_or_else(|| {
+                    let old_thumb = row["imagePath"]
+                        .as_str()
+                        .filter(|p| {
+                            Path::new(p)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.ends_with(".thumb.jpg"))
+                        })
+                        .and_then(|p| self.cached_media_file(Path::new(p)))
+                        .or_else(|| {
+                            self.cached_media_file(&legacy_dir.join(format!("{id}.thumb.jpg")))
+                        });
+                    if let Some(old_thumb) = old_thumb {
+                        return self.adopt_cached_media(&old_thumb, &thumb);
+                    }
                     // Do not let ffmpeg follow an invalid/escaping thumbnail link.
                     if std::fs::symlink_metadata(&thumb).is_ok() {
                         std::fs::remove_file(&thumb)?;
@@ -777,7 +894,7 @@ mod tests {
                 let db = root.join("messages.sqlite3");
                 let mut store = Store::open(&db).unwrap();
                 store.set_account("me");
-                store.save_messages("u1",&[json!({"id":"123","contentType":kind,"imagePath":"/stale/thumbnail.jpg"})]).unwrap();
+                store.save_messages("u1",&[json!({"id":"123","chatMid":"wrong","from":"u1","to":"me","createdTime":1234,"contentType":kind,"imagePath":"/stale/thumbnail.jpg"})]).unwrap();
                 let engine = Engine::new(
                     store,
                     PreviewHost { ipc, program },
@@ -821,6 +938,9 @@ mod tests {
                                 } => {
                                     ready = true;
                                     let file = file_path.unwrap();
+                                    assert!(
+                                        file.contains("/cache/media/u1/1970-01-01_000001_234_123.")
+                                    );
                                     assert_eq!(
                                         std::fs::read(&file).unwrap(),
                                         b"original media bytes"
@@ -871,7 +991,8 @@ mod tests {
                     std::panic::resume_unwind(e);
                 }
                 assert_eq!(
-                    root.join("cache/media/123.thumb.jpg").exists(),
+                    root.join("cache/media/u1/1970-01-01_000001_234_123.thumb.jpg")
+                        .exists(),
                     mode == "success"
                 );
                 let mut store = Store::open(&db).unwrap();
@@ -1005,6 +1126,7 @@ mod tests {
             assert_eq!(std::fs::read(source).unwrap(), b"unchanged original");
             if kind == "video" && filename != "blob.bin" {
                 let mut row = result["rawMessage"].clone();
+                row["chatMid"] = json!("u1");
                 row["filePath"] = result["filePath"].clone();
                 row["imagePath"] = result["imagePath"].clone();
                 // Any attempted RPC now fails immediately: cached reloads must
@@ -1033,6 +1155,117 @@ mod tests {
             }
             std::fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn mid_cache_migrates_legacy_originals_and_previews_offline() {
+        let root = std::env::temp_dir().join(format!("line-mid-cache-{}", std::process::id()));
+        let legacy = root.join("cache/media");
+        std::fs::create_dir_all(&legacy).unwrap();
+        let (events, _) = async_channel::unbounded();
+        let ipc = Ipc {
+            stdin: Arc::new(Mutex::new(None)),
+            replies: Arc::default(),
+            ids: Arc::new(AtomicU64::new(1)),
+            generation: Arc::new(AtomicU64::new(1)),
+            events,
+            data: root.clone(),
+            asset_at: Mutex::new(None),
+        };
+        for (id, kind, old_suffix, new_suffix, chat) in [
+            ("123", "IMAGE", "full.png", "full.png", "cgroup"),
+            ("124", "IMAGE", "gif", "full.gif", "upeer"),
+            ("125", "VIDEO", "webm", "webm", "rroom"),
+        ] {
+            let old = legacy.join(format!("{id}.{old_suffix}"));
+            let old_thumb = legacy.join(format!("{id}.thumb.jpg"));
+            std::fs::write(&old, b"original").unwrap();
+            std::fs::write(&old_thumb, b"preview").unwrap();
+            let mut row = json!({"id":id,"chatMid":chat,"from":"sender","to":"me","createdTime":"1793525415123","contentType":kind});
+            // Test both saved paths and filename-only recovery of old uploads.
+            if kind == "VIDEO" {
+                row["filePath"] = json!(old);
+                row["imagePath"] = json!(old_thumb);
+            }
+            let updated = ipc
+                .materialize_with_preview(&row, 1, |_, _| panic!("reuse legacy preview"))
+                .unwrap();
+            let expected = legacy
+                .join(chat)
+                .join(format!("2026-11-01_093015_123_{id}.{new_suffix}"));
+            assert_eq!(Path::new(updated["filePath"].as_str().unwrap()), expected);
+            assert_eq!(std::fs::read(&expected).unwrap(), b"original");
+            assert_eq!(
+                std::fs::read(&old).unwrap(),
+                b"original",
+                "old UI/database paths stay valid"
+            );
+            if new_suffix == "full.gif" {
+                assert_eq!(updated["imagePath"], updated["filePath"]);
+            } else {
+                assert_eq!(
+                    std::fs::read(updated["imagePath"].as_str().unwrap()).unwrap(),
+                    b"preview"
+                );
+                assert_eq!(
+                    Path::new(updated["imagePath"].as_str().unwrap()).parent(),
+                    expected.parent()
+                );
+            }
+            // Simulate a stale SQLite row after migration, with only the new
+            // original/preview left on disk: rediscovery must not need RPC.
+            std::fs::remove_file(old).unwrap();
+            std::fs::remove_file(old_thumb).unwrap();
+            let again = ipc
+                .materialize_with_preview(&row, 1, |_, _| panic!("reuse new preview"))
+                .unwrap();
+            assert_eq!(again, updated);
+        }
+        assert_eq!(ipc.ids.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mid_cache_paths_are_stable_isolated_and_reject_unsafe_directories() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("line-mid-layout-{}", std::process::id()));
+        let (events, _) = async_channel::unbounded();
+        let ipc = Ipc {
+            stdin: Arc::new(Mutex::new(None)),
+            replies: Arc::default(),
+            ids: Arc::new(AtomicU64::new(1)),
+            generation: Arc::new(AtomicU64::new(1)),
+            events,
+            data: root.clone(),
+            asset_at: Mutex::new(None),
+        };
+        let row = json!({"id":"999","chatMid":"cgroup","createdTime":1234,"contentType":"IMAGE"});
+        let (dir, stem) = ipc.media_cache_layout(&row).unwrap();
+        assert_eq!(stem, "1970-01-01_000001_234_999");
+        let mut later = row.clone();
+        later["id"] = json!("1");
+        later["createdTime"] = json!(1235);
+        assert!(stem < ipc.media_cache_layout(&later).unwrap().1);
+        later["chatMid"] = json!("upeer");
+        assert_ne!(dir, ipc.media_cache_layout(&later).unwrap().0);
+        for time in [Value::Null, json!(i64::MAX), json!("invalid")] {
+            later["createdTime"] = time;
+            assert_eq!(
+                ipc.media_cache_layout(&later).unwrap().1,
+                "1970-01-01_000000_000_1"
+            );
+        }
+        for chat in ["", "..", "../escape", "/absolute", "u/peer", "u\\peer"] {
+            later["chatMid"] = json!(chat);
+            assert!(ipc.media_cache_layout(&later).is_err());
+        }
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("cache/media/ulink")).unwrap();
+        later["chatMid"] = json!("ulink");
+        assert!(ipc.media_cache_layout(&later).is_err());
+        assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1084,8 +1317,7 @@ mod tests {
             data: root.clone(),
             asset_at: Mutex::new(None),
         };
-        let row =
-            json!({"id":"123","contentType":"VIDEO","filePath":root.join("cache/media/123.webm")});
+        let row = json!({"id":"123","chatMid":"u1","contentType":"VIDEO","filePath":root.join("cache/media/123.webm")});
         let loaded = ipc.materialize(&row, 1);
         let _ = child.kill();
         let _ = child.wait();
@@ -1138,7 +1370,7 @@ mod tests {
             assert!(ipc.cached_media_file(path).is_none());
         }
         // Even the legacy filename search must reject the symlink, not merely filePath.
-        let result = ipc.materialize(&json!({"id":"123","contentType":"VIDEO"}), 1);
+        let result = ipc.materialize(&json!({"id":"123","chatMid":"u1","contentType":"VIDEO"}), 1);
         assert_eq!(result.unwrap_err().to_string(), "protocol unavailable");
         assert_eq!(std::fs::read(&outside).unwrap(), b"private");
         std::fs::remove_dir_all(root).unwrap();
@@ -1812,10 +2044,17 @@ mod tests {
             if let Err(error) = outcome {
                 std::panic::resume_unwind(error);
             }
-            assert_eq!(
-                std::fs::read(root.join(format!("cache/media/123.{extension}"))).unwrap(),
-                b"original attachment bytes"
-            );
+            let cached = if kind == "audio" {
+                root.join(format!("cache/media/123.{extension}"))
+            } else {
+                let suffix = if kind == "video" {
+                    extension.to_owned()
+                } else {
+                    format!("full.{extension}")
+                };
+                root.join(format!("cache/media/u1/1970-01-01_000000_000_123.{suffix}"))
+            };
+            assert_eq!(std::fs::read(cached).unwrap(), b"original attachment bytes");
             assert_eq!(std::fs::read(source).unwrap(), b"original attachment bytes");
             assert_eq!(
                 std::fs::read_dir(root.join("cache/transfer"))

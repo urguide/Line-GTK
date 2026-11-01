@@ -393,14 +393,17 @@ impl Store {
             tx.execute("INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(account,chat,id) DO UPDATE SET created=excluded.created,updated=excluded.updated,body=excluded.body",
                 params![self.account, chat, message_id, merged["createdTime"].as_i64().unwrap_or(0), now, merged.to_string()])?;
         }
-        tx.execute(
-            "DELETE FROM pages WHERE account=?1 AND updated<?2",
-            params![self.account, now.saturating_sub(self.ttl_ms)],
-        )?;
-        tx.execute(
-            "DELETE FROM messages WHERE account=?1 AND updated<?2",
-            params![self.account, now.saturating_sub(self.ttl_ms)],
-        )?;
+        // Permanent history needs no expiry scan on every incoming message.
+        if self.ttl_ms != i64::MAX {
+            tx.execute(
+                "DELETE FROM pages WHERE account=?1 AND updated<?2",
+                params![self.account, now.saturating_sub(self.ttl_ms)],
+            )?;
+            tx.execute(
+                "DELETE FROM messages WHERE account=?1 AND updated<?2",
+                params![self.account, now.saturating_sub(self.ttl_ms)],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }

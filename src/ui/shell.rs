@@ -975,6 +975,12 @@ pub fn load_css() {
             padding: 0 4px;
             font-size: 0.7em;
         }
+        .line-chat-pin {
+            background: @accent_bg_color;
+            color: @accent_fg_color;
+            border-radius: 999px;
+            padding: 3px;
+        }
         .line-msg-scroll {
             background: transparent;
         }

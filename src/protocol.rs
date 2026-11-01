@@ -35,7 +35,7 @@ pub struct Profile {
     pub picture_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatInfo {
     pub mid: String,
     pub name: String,
