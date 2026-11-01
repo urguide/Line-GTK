@@ -114,6 +114,8 @@
   "tray_chat_missing": "Chat not found in the list yet",
   "settings_cache": "Cache",
   "cache_retention": "Keep cache",
+  "enable_memory_media": "Images/videos: memory only",
+  "disable_memory_media": "Images/videos: restore disk cache",
   "cache_retention_desc": "How long chats/messages stay warm. Stickers, photos, and avatars stay on disk until you clear them.",
   "cache_retention_subtitle": "Smart keeps messages on disk forever; chat list snapshots for 360 days",
   "cache_ret_smart": "Smart (recommended)",

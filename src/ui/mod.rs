@@ -174,6 +174,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         restored_last_chat: Rc::new(RefCell::new(false)),
         media_queue: Rc::new(RefCell::new(VecDeque::new())),
         media_pumping: Rc::new(RefCell::new(false)),
+        memory_visible: Rc::new(RefCell::new(HashSet::new())),
         stick_bottom: Rc::new(RefCell::new(true)),
         scroll_pinning: Rc::new(RefCell::new(false)),
         scroll_pin_gen: Rc::new(RefCell::new(0)),
@@ -920,6 +921,12 @@ fn wire_scroll_pin(state: &AppState) {
         glib::Propagation::Proceed
     });
     state.message_scroll.add_controller(wheel);
+
+    let s = state.clone();
+    state.message_list.widget().add_tick_callback(move |_, _| {
+        update_memory_viewport(&s);
+        glib::ControlFlow::Continue
+    });
 
     let s = state.clone();
     let adj = state.message_scroll.vadjustment();

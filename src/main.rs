@@ -6,6 +6,7 @@ mod core_notes;
 mod desktop_notify;
 mod discord_rpc;
 mod i18n;
+mod memory_media;
 mod protocol;
 mod sidecar;
 mod sticker_anim;

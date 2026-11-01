@@ -204,6 +204,80 @@ impl Ipc {
         })
     }
 
+    fn send_memory_attachment(&self, p: &Value, kind: &str, generation: u64) -> Result<Value> {
+        use base64::Engine as _;
+        use std::io::Read;
+        let source = p["filePath"].as_str().context("missing attachment")?;
+        let _clipboard = crate::memory_media::take_upload(source);
+        let original = crate::memory_media::RamFile::new()?;
+        std::io::copy(&mut std::fs::File::open(source)?, &mut &*original.0)?;
+        let preview = crate::memory_media::preview(&original).ok();
+        let started = self.call("bridge_memory_upload_start", json!({}), generation)?;
+        let token = started["token"]
+            .as_str()
+            .context("missing memory upload token")?;
+        let result = (|| {
+            let mut input = std::fs::File::open(original.path())?;
+            let mut buffer = vec![0; 256 * 1024];
+            loop {
+                let n = input.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                self.call(
+                    "bridge_memory_upload_chunk",
+                    json!({"token":token,
+                    "data":base64::engine::general_purpose::STANDARD.encode(&buffer[..n])}),
+                    generation,
+                )?;
+            }
+            let filename = if crate::memory_media::is_ram_path(source) {
+                "image.png"
+            } else {
+                Path::new(source)
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("media.bin")
+            };
+            let ext = line_rust_core::attachments::file_extension(Some(filename), "");
+            let preview_data = preview
+                .as_ref()
+                .map(|file| std::fs::read(file.path()))
+                .transpose()?
+                .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
+            let params = json!({"chatMid":p["chatMid"],"memoryToken":token,"previewData":preview_data,
+                "fileName":filename,"extension":ext,"mime":line_rust_core::attachments::mime(&ext,kind),
+                "oType":kind,"durationMs":p["durationMs"]});
+            let mut result = line_rust_core::attachments::upload(
+                &params,
+                |rpc, args| self.call(rpc, args, generation),
+                || self.active(generation),
+            )?;
+            if let Some(id) = result["objId"].as_str() {
+                result = json!({"rawMessage":{"id":id,"createdTime":std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64}});
+            }
+            result["rawMessage"]["from"] = p["account"].clone();
+            result["rawMessage"]["to"] = p["chatMid"].clone();
+            result["rawMessage"]["contentType"] =
+                json!(if kind == "video" { "VIDEO" } else { "IMAGE" });
+            if !result["rawMessage"]["contentMetadata"].is_object() {
+                result["rawMessage"]["contentMetadata"] = json!({});
+            }
+            result["rawMessage"]["contentMetadata"]["FILE_NAME"] = json!(filename);
+            result["fileName"] = json!(filename);
+            // The sent message is persisted without any process-local paths.
+            // Its visible row uses the same lazy memory download path as incoming media.
+            Ok(result)
+        })();
+        let _ = self.call(
+            "bridge_memory_upload_release",
+            json!({"token":token}),
+            generation,
+        );
+        result
+    }
+
     pub(crate) fn send_attachment_with_preview(
         &self,
         p: &Value,
@@ -247,6 +321,11 @@ impl Ipc {
             p["oType"].as_str().unwrap_or("auto"),
             &filename,
         );
+        if matches!(kind, "image" | "gif" | "video")
+            && crate::memory_media::for_data(&self.data).current_enabled(chat)
+        {
+            return self.send_memory_attachment(p, kind, generation);
+        }
         // Validate the destination before uploading anything to the server.
         let content_type = if kind == "gif" {
             "IMAGE".to_owned()

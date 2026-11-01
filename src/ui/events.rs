@@ -324,6 +324,29 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             file_path,
         } => {
             // Always remember hydrated paths so list rebuilds / late bubbles can attach.
+            if chat_memory_media(state, &chat_mid)
+                && state
+                    .media_msgs
+                    .borrow()
+                    .get(&message_id)
+                    .is_some_and(|m| matches!(m.content_type.as_str(), "IMAGE" | "VIDEO"))
+                && !file_path
+                    .as_deref()
+                    .is_some_and(crate::memory_media::is_ram_path)
+            {
+                return;
+            }
+            if chat_memory_media(state, &chat_mid)
+                && state
+                    .media_msgs
+                    .borrow()
+                    .get(&message_id)
+                    .is_none_or(|m| matches!(m.content_type.as_str(), "IMAGE" | "VIDEO"))
+                && (!state.memory_visible.borrow().contains(&message_id)
+                    || state.current_chat.borrow().as_deref() != Some(chat_mid.as_str()))
+            {
+                return;
+            }
             if state.unsent_msg_ids.borrow().contains(&message_id) {
                 return;
             }
@@ -332,7 +355,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     .media_ready_paths
                     .borrow_mut()
                     .insert(message_id.clone(), image_path.clone());
-                refresh_notification_media(state, &message_id, &image_path);
+                if !chat_memory_media(state, &chat_mid) {
+                    refresh_notification_media(state, &message_id, &image_path);
+                }
             }
 
             if state.current_chat.borrow().as_deref() != Some(chat_mid.as_str()) {
@@ -659,12 +684,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     ..
                 }) => {
                     remove_pending_placeholder(state, &placeholder_id);
-                    if state.current_chat.borrow().as_deref() != Some(chat_mid.as_str()) {
-                        return;
-                    }
                     if let Ok(msg) = serde_json::from_value::<MessageInfo>(
                         result.get("message").cloned().unwrap_or_default(),
                     ) {
+                        update_chat_preview(state, &chat_mid, &msg);
+                        if state.current_chat.borrow().as_deref() != Some(chat_mid.as_str()) {
+                            return;
+                        }
                         if state.msg_stack.visible_child_name().as_deref() != Some("list") {
                             set_msg_state(state, "list", None);
                         }

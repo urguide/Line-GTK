@@ -15,6 +15,13 @@ pub trait Transport: Send + 'static {
     fn call(&self, method: &str, params: Value, generation: u64) -> Result<Value>;
     fn materialize(&self, message: &Value, generation: u64) -> Result<Value>;
     fn emit(&self, event: Value);
+    fn memory_media(&self, _account: &str, _chat: &str) -> bool {
+        false
+    }
+    fn media_visible(&self, _chat: &str, _id: &str) -> bool {
+        false
+    }
+    fn session(&self, _account: &str, _generation: u64) {}
     fn application(&self, method: &str, params: Value, generation: u64) -> Result<Value> {
         self.call(method, params, generation)
     }
@@ -62,6 +69,11 @@ pub enum Command {
         generation: u64,
     },
     Retention(String),
+    VisibleMedia {
+        chat: String,
+        ids: Vec<String>,
+        generation: u64,
+    },
     Stop,
 }
 
@@ -180,6 +192,11 @@ impl<T: Transport> Engine<T> {
 
     fn queue_media(&mut self, chat: &str, rows: &[Value], generation: u64) {
         for row in rows.iter().rev() {
+            if self.transport.memory_media(&self.account, chat)
+                && matches!(row["contentType"].as_str(), Some("IMAGE" | "VIDEO"))
+            {
+                continue;
+            }
             if row["decodeError"].is_null()
                 && matches!(
                     row["contentType"].as_str(),
@@ -199,6 +216,9 @@ impl<T: Transport> Engine<T> {
     }
 
     fn queue_gap(&mut self, chat: &str, generation: u64) {
+        if self.transport.memory_media(&self.account, chat) {
+            return;
+        }
         if self.queued_gaps.insert(chat.to_owned()) {
             self.background.push_back(Work::Gap {
                 chat: chat.to_owned(),
@@ -232,12 +252,21 @@ impl<T: Transport> Engine<T> {
         // Use the authoritative conversation, not the sender (or our own MID
         // in incoming direct messages), when choosing a media cache directory.
         current["chatMid"] = json!(chat);
+        let memory = self.transport.memory_media(&self.account, chat)
+            && matches!(current["contentType"].as_str(), Some("IMAGE" | "VIDEO"));
+        if memory && !self.transport.media_visible(chat, id(&current)) {
+            bail!("media_not_visible");
+        }
         let result = self.transport.materialize(&current, generation);
         self.last_media = Some(Instant::now());
         self.valid(generation)?;
         let updated = result?;
-        self.store
-            .save_messages(chat, std::slice::from_ref(&updated))?;
+        let memory_now = self.transport.memory_media(&self.account, chat)
+            && matches!(updated["contentType"].as_str(), Some("IMAGE" | "VIDEO"));
+        if !memory && !memory_now {
+            self.store
+                .save_messages(chat, std::slice::from_ref(&updated))?;
+        }
         self.transport.emit(json!({"event":"media_ready","chatMid":chat,"messageId":id(&updated),"imagePath":updated["imagePath"],"audioPath":updated["audioPath"],"filePath":updated["filePath"]}));
         Ok(updated)
     }
@@ -517,6 +546,27 @@ impl<T: Transport> Engine<T> {
                 self.response(id, result, generation);
             }
             Command::Stop => return Ok(false),
+            Command::VisibleMedia {
+                chat,
+                ids,
+                generation,
+            } => {
+                self.valid(generation)?;
+                for message in ids {
+                    if self.transport.memory_media(&self.account, &chat)
+                        && self.transport.media_visible(&chat, &message)
+                        && let Some(row) = self.store.message(&chat, &message)?
+                        && matches!(row["contentType"].as_str(), Some("IMAGE" | "VIDEO"))
+                        && self.queued_media.insert((chat.clone(), message))
+                    {
+                        self.background.push_back(Work::Media {
+                            chat: chat.clone(),
+                            row,
+                            generation,
+                        });
+                    }
+                }
+            }
             Command::Retention(mode) => {
                 self.policy = crate::cache_policy::CachePolicy::for_mode(&mode);
                 self.store.set_retention(&mode);
@@ -536,6 +586,7 @@ impl<T: Transport> Engine<T> {
                 self.queued_gaps.clear();
                 self.account = account;
                 self.session_generation = generation;
+                self.transport.session(&self.account, generation);
                 self.store.set_account(&self.account);
                 if self.account.is_empty() {
                     return Ok(true);
@@ -556,6 +607,13 @@ impl<T: Transport> Engine<T> {
                             self.queue_gap(&chat, generation);
                         }
                         for row in &mut page.messages {
+                            if self.transport.memory_media(&self.account, &chat)
+                                && matches!(row["contentType"].as_str(), Some("IMAGE" | "VIDEO"))
+                            {
+                                row["imagePath"] = Value::Null;
+                                row["filePath"] = Value::Null;
+                                row["needsMedia"] = json!(true);
+                            }
                             if let Some(object) = row.as_object_mut() {
                                 object.remove("rawMessage");
                                 for key in ["imagePath", "audioPath", "filePath"] {
@@ -604,6 +662,12 @@ impl<T: Transport> Engine<T> {
                 self.store.invalidate(&chat)?;
                 self.store.invalidate_catalogs()?;
                 let mut visible = message.clone();
+                if self.transport.memory_media(&self.account, &chat)
+                    && matches!(visible["contentType"].as_str(), Some("IMAGE" | "VIDEO"))
+                {
+                    visible["imagePath"] = Value::Null;
+                    visible["filePath"] = Value::Null;
+                }
                 if let Some(obj) = visible.as_object_mut() {
                     obj.remove("rawMessage");
                 }
@@ -647,6 +711,12 @@ impl<T: Transport> Engine<T> {
             } => {
                 self.queued_media
                     .remove(&(chat.clone(), id(&row).to_owned()));
+                if self.transport.memory_media(&self.account, &chat)
+                    && matches!(row["contentType"].as_str(), Some("IMAGE" | "VIDEO"))
+                    && !self.transport.media_visible(&chat, id(&row))
+                {
+                    return Ok(());
+                }
                 if let Err(error) = self.media(&chat, row.clone(), generation) {
                     if self.valid(generation).is_ok() {
                         self.transport.emit(
@@ -658,6 +728,9 @@ impl<T: Transport> Engine<T> {
             }
             Work::Gap { chat, generation } => {
                 self.queued_gaps.remove(&chat);
+                if self.transport.memory_media(&self.account, &chat) {
+                    return Ok(());
+                }
                 self.valid(generation)?;
                 if let Some(gap) = self.store.gap(&chat)? {
                     let page = self.fetch(&chat, Some(&gap.before), generation)?;
@@ -683,6 +756,9 @@ impl<T: Transport> Engine<T> {
             } => {
                 self.valid(generation)?;
                 // All page media jobs are ahead of this checkpoint in the FIFO.
+                if self.transport.memory_media(&self.account, &chat) {
+                    return Ok(());
+                }
                 self.store.advance(&chat, &gap, next.as_ref())?;
                 self.last_request = Some(Instant::now());
                 self.queue_gap(&chat, generation);

@@ -328,7 +328,10 @@ impl Store {
                 let latest:Option<String>=self.db.query_row("SELECT body FROM messages WHERE account=?1 AND chat=?2 ORDER BY created DESC,LENGTH(id) DESC,id DESC LIMIT 1",params![self.account,mid],|r|r.get(0)).optional()?;
                 if let Some(latest) = latest {
                     let message: Value = serde_json::from_str(&latest)?;
-                    row["preview"] = message["text"].clone();
+                    row["preview"] = json!(crate::message::preview(
+                        message["contentType"].as_str().unwrap_or_default(),
+                        message["text"].as_str().unwrap_or_default(),
+                    ));
                     if message["createdTime"].as_i64().unwrap_or(0)
                         > row["lastActivity"].as_i64().unwrap_or(0)
                     {

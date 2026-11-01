@@ -22,6 +22,7 @@ type Replies = Arc<Mutex<HashMap<u64, mpsc::SyncSender<Response>>>>;
 
 #[derive(Clone)]
 pub struct CoreBridge {
+    pub memory: Arc<crate::memory_media::MemoryMedia>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     events: Sender<ProtocolEvent>,
     failed_generation: Arc<AtomicU64>,
@@ -51,6 +52,8 @@ impl CoreBridge {
         events: Sender<ProtocolEvent>,
     ) -> Result<Self> {
         let cache = data.join("cache");
+        let memory = crate::memory_media::for_data(data);
+        memory.configure(crate::config::AppConfig::load(data).memory_media_chats);
         crate::config::ensure_private_dir(&cache)?;
         let store = Store::open(&cache.join("messages.sqlite3"))?;
         #[cfg(unix)]
@@ -77,6 +80,7 @@ impl CoreBridge {
             .name("line-rust-core".into())
             .spawn(move || engine.run(rx))?;
         Ok(Self {
+            memory,
             stdin,
             events,
             failed_generation: Arc::new(AtomicU64::new(0)),
@@ -302,6 +306,15 @@ impl Ipc {
 }
 
 impl Transport for Ipc {
+    fn memory_media(&self, account: &str, chat: &str) -> bool {
+        crate::memory_media::for_data(&self.data).enabled(account, chat)
+    }
+    fn media_visible(&self, chat: &str, id: &str) -> bool {
+        crate::memory_media::for_data(&self.data).requested(chat, id)
+    }
+    fn session(&self, account: &str, generation: u64) {
+        crate::memory_media::for_data(&self.data).session(account, generation);
+    }
     fn application(&self, method: &str, params: Value, generation: u64) -> Result<Value> {
         self.application_operation(method, params, generation)
     }
@@ -369,6 +382,61 @@ impl Transport for Ipc {
 }
 
 impl Ipc {
+    /// Transfer bounded chunks directly into anonymous memory, never cache/transfer.
+    fn materialize_memory(&self, row: &Value, generation: u64) -> Result<Value> {
+        use base64::Engine as _;
+        let memory = crate::memory_media::for_data(&self.data);
+        let chat = row["chatMid"].as_str().context("missing media chat")?;
+        let id = row["id"].as_str().context("missing media ID")?;
+        let epoch = memory.ticket(chat, id)?;
+        if let Some(media) = memory.get(chat, id) {
+            return Ok(media.apply(row));
+        }
+        let download = self.call("bridge_memory_download", json!({"message":row}), generation)?;
+        let token = download["token"]
+            .as_str()
+            .context("missing memory transfer token")?;
+        let result = (|| {
+            let original = crate::memory_media::RamFile::new()?;
+            let size = download["bytes"]
+                .as_u64()
+                .context("missing transfer size")?;
+            if size == 0 {
+                bail!("empty media");
+            }
+            let mut offset = 0;
+            while offset < size {
+                self.active(generation)?;
+                memory.check(chat, id, epoch)?;
+                let part = self.call(
+                    "bridge_memory_chunk",
+                    json!({"token":token,"offset":offset}),
+                    generation,
+                )?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(part["data"].as_str().context("missing transfer bytes")?)?;
+                if bytes.is_empty()
+                    || bytes.len() > 256 * 1024
+                    || offset + bytes.len() as u64 > size
+                {
+                    bail!("invalid memory transfer chunk");
+                }
+                original.write(&bytes)?;
+                offset += bytes.len() as u64;
+            }
+            let preview = crate::memory_media::preview(&original)
+                .ok()
+                .or_else(|| (row["contentType"] == "IMAGE").then(|| original.clone()));
+            self.active(generation)?;
+            let media = crate::memory_media::Media { original, preview };
+            let updated = media.apply(row);
+            memory.insert(chat, id, epoch, media)?;
+            Ok(updated)
+        })();
+        let _ = self.call("bridge_memory_release", json!({"token":token}), generation);
+        result
+    }
+
     /// Stable UTC names keep lexical ordering chronological across time zones.
     /// Missing legacy timestamps use the epoch, never the time of download.
     pub(crate) fn media_cache_layout(&self, row: &Value) -> Result<(PathBuf, String)> {
@@ -443,6 +511,12 @@ impl Ipc {
             bail!("invalid media ID");
         }
         let kind = row["contentType"].as_str().unwrap_or("FILE");
+        if matches!(kind, "IMAGE" | "VIDEO")
+            && crate::memory_media::for_data(&self.data)
+                .current_enabled(row["chatMid"].as_str().unwrap_or_default())
+        {
+            return self.materialize_memory(row, generation);
+        }
         if kind == "STICKER" {
             return self.sticker_media(row, generation);
         }
@@ -536,6 +610,14 @@ impl Ipc {
             ))?;
             if !temporary.starts_with(self.data.join("cache/transfer").canonicalize()?) {
                 bail!("invalid transfer location");
+            }
+            // A right-click policy change can arrive during the blocking RPC.
+            if matches!(kind, "IMAGE" | "VIDEO")
+                && crate::memory_media::for_data(&self.data)
+                    .current_enabled(row["chatMid"].as_str().unwrap_or_default())
+            {
+                let _ = std::fs::remove_file(&temporary);
+                return self.materialize_memory(row, generation);
             }
             let mime = downloaded["mime"].as_str().unwrap_or_default();
             let generic_ext =
@@ -757,6 +839,7 @@ mod tests {
             .unwrap();
         let stdout = child.stdout.take().unwrap();
         let bridge = CoreBridge {
+            memory: Arc::default(),
             audio: Default::default(),
             data: PathBuf::new(),
             commands,

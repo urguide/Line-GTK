@@ -16,6 +16,8 @@ resolver = "3"
 [dependencies]
 line-rust-core = { path = "core" }
 anyhow = "1.0.104"
+base64 = "0.22"
+libc = "0.2"
 async-channel = "2.5.0"
 chrono = { version = "0.4.45", features = ["serde"] }
 dirs = "6.0.0"

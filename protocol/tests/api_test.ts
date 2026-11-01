@@ -5,6 +5,76 @@ import { packRaw, unpackRaw, wireLine } from "../src/raw_codec.ts";
 import { coerceI64 } from "../src/messages.ts";
 import { unsendFromOperation } from "../src/events.ts";
 
+Deno.test("memory media transfers bytes without creating disk transfers", async () => {
+  const bytes = new Uint8Array(300000).fill(17);
+  const api = createApi(
+    () => ({} as Client),
+    "/nonexistent/no-disk-writes",
+    () =>
+      Promise.resolve({
+        raw: {},
+        getData: () => Promise.resolve(new Blob([bytes])),
+      } as unknown as TalkMessage),
+  );
+  const start = await api("bridge_memory_download", {
+    message: { rawMessage: {} },
+  }) as { token: string; bytes: number };
+  assertEquals(start.bytes, bytes.length);
+  const first = await api("bridge_memory_chunk", {
+    token: start.token,
+    offset: 0,
+  }) as { data: string };
+  assertEquals(atob(first.data).length, 256 * 1024);
+  const last = await api("bridge_memory_chunk", {
+    token: start.token,
+    offset: 256 * 1024,
+  }) as { data: string };
+  assertEquals(atob(last.data).length, bytes.length - 256 * 1024);
+  await api("bridge_memory_release", { token: start.token });
+  await assertRejects(
+    () => api("bridge_memory_chunk", { token: start.token, offset: 0 }),
+    Error,
+    "invalid_memory_transfer",
+  );
+});
+
+Deno.test("memory uploads reach OBS without staging files", async () => {
+  const client = {
+    base: {
+      obs: {
+        uploadObjTalk: async (
+          chat: string,
+          type: string,
+          data: Blob,
+        ) => {
+          assertEquals(chat, "r1");
+          assertEquals(type, "image");
+          assertEquals(await data.text(), "image bytes");
+          return { objId: "1", objHash: "hash" };
+        },
+      },
+    },
+  } as unknown as Client;
+  const api = createApi(() => client, "/nonexistent/no-disk-writes");
+  const { token } = await api("bridge_memory_upload_start", {}) as {
+    token: string;
+  };
+  await api("bridge_memory_upload_chunk", { token, data: btoa("image bytes") });
+  const params = {
+    memoryToken: token,
+    chatMid: "r1",
+    oType: "image",
+    fileName: "photo.png",
+  };
+  await api("bridge_upload_plain_media", params);
+  await api("bridge_memory_upload_release", { token });
+  await assertRejects(
+    () => api("bridge_upload_plain_media", params),
+    Error,
+    "invalid_memory_upload",
+  );
+});
+
 Deno.test("session and profile wire envelopes preserve bigint without crashing launcher", () => {
   const profile = {
     mid: "u1",

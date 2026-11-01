@@ -1726,6 +1726,7 @@ version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-channel",
+ "base64",
  "cairo-rs",
  "chrono",
  "dirs",
@@ -1736,6 +1737,7 @@ dependencies = [
  "image",
  "ksni",
  "libadwaita",
+ "libc",
  "line-rust-core",
  "notify-rust",
  "png",

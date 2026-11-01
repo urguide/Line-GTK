@@ -16,6 +16,38 @@ pub(super) fn chat_is_hidden(state: &AppState, mid: &str) -> bool {
         .chat_is_hidden(state.self_mid.borrow().as_deref(), mid)
 }
 
+pub(super) fn chat_memory_media(state: &AppState, mid: &str) -> bool {
+    state
+        .config
+        .borrow()
+        .chat_memory_media(state.self_mid.borrow().as_deref(), mid)
+}
+
+fn toggle_memory_media(state: &AppState, mid: &str) {
+    let Some(account) = state.self_mid.borrow().clone() else {
+        return;
+    };
+    {
+        let mut config = state.config.borrow_mut();
+        let chats = config.memory_media_chats.entry(account).or_default();
+        if !chats.remove(mid) {
+            chats.insert(mid.into());
+        }
+        state.sidecar.set_memory_media(&config);
+        config.save(&state.data_dir);
+    }
+    if state.current_chat.borrow().as_deref() == Some(mid) {
+        let chat = state.chats.borrow().iter().find(|c| c.mid == mid).cloned();
+        if let Some(chat) = chat {
+            for id in state.media_msgs.borrow().keys() {
+                state.media_ready_paths.borrow_mut().remove(id);
+            }
+            *state.current_chat.borrow_mut() = None;
+            open_chat(state, &chat);
+        }
+    }
+}
+
 pub(super) fn chat_is_muted(state: &AppState, mid: &str) -> bool {
     let server_muted = state
         .chats
@@ -196,6 +228,22 @@ pub(super) fn wire_chat_context_menu(state: &AppState) {
         }));
         mute.add_css_class("flat");
         actions.append(&mute);
+        let memory = gtk::Button::with_label(&crate::i18n::t(if chat_memory_media(&s, &mid) {
+            "disable_memory_media"
+        } else {
+            "enable_memory_media"
+        }));
+        memory.add_css_class("flat");
+        actions.append(&memory);
+        let state = s.clone();
+        let memory_mid = mid.clone();
+        let popup = popover.downgrade();
+        memory.connect_clicked(move |_| {
+            if let Some(popup) = popup.upgrade() {
+                popup.popdown();
+            }
+            toggle_memory_media(&state, &memory_mid);
+        });
         let hide = gtk::Button::with_label(&crate::i18n::t("hide_chat"));
         hide.add_css_class("flat");
         actions.append(&hide);
@@ -506,7 +554,7 @@ pub(super) fn maybe_restore_last_chat(state: &AppState) {
         return;
     }
     let last = state.config.borrow().last_chat_mid.clone();
-    if last.is_empty() || chat_is_hidden(state, &last) {
+    if last.is_empty() || chat_is_hidden(state, &last) || chat_memory_media(state, &last) {
         *state.restored_last_chat.borrow_mut() = true;
         return;
     }
@@ -632,9 +680,9 @@ pub(super) fn build_chat_row(
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
         .build();
-    let preview_text = if chat.preview.is_empty() {
+    let preview_text = if chat.preview.trim().is_empty() {
         if chat.last_activity > 0 {
-            crate::i18n::t("loading_last")
+            crate::i18n::t("tap_open")
         } else {
             crate::i18n::t("no_recent")
         }

@@ -1,4 +1,7 @@
-use super::{AppState, PendingNotif, chat_is_muted, notifications_allowed, preview_body_ui};
+use super::{
+    AppState, PendingNotif, chat_is_muted, chat_memory_media, notifications_allowed,
+    preview_body_ui,
+};
 use crate::desktop_notify::ChatNotification;
 use crate::protocol::MessageInfo;
 use gtk::gio;
@@ -23,6 +26,7 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
     let image_path = msg
         .image_path
         .as_deref()
+        .filter(|_| !chat_memory_media(state, peer_mid))
         .filter(|p| !p.is_empty() && Path::new(p).exists())
         .map(str::to_string);
 

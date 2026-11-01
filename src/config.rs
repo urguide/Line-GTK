@@ -28,6 +28,8 @@ pub struct AppConfig {
     pub last_chat_mid: String,
     /// Locally pinned chats, keyed by the signed-in account MID.
     pub pinned_chats: BTreeMap<String, BTreeSet<String>>,
+    /// Account-local chats whose image/video cache is RAM-only and viewport-driven.
+    pub memory_media_chats: BTreeMap<String, BTreeSet<String>>,
     /// Local notification mute for group/room chats (DM mute is synced with LINE).
     pub muted_chats: BTreeMap<String, BTreeMap<String, bool>>,
     /// Hidden chat snapshots allow restoring even after catalog cache expiry.
@@ -84,6 +86,7 @@ impl Default for AppConfig {
             auto_mark_read: true,
             last_chat_mid: String::new(),
             pinned_chats: BTreeMap::new(),
+            memory_media_chats: BTreeMap::new(),
             muted_chats: BTreeMap::new(),
             hidden_chats: BTreeMap::new(),
             audio_input: String::new(),
@@ -110,6 +113,12 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn chat_memory_media(&self, account: Option<&str>, mid: &str) -> bool {
+        account
+            .and_then(|account| self.memory_media_chats.get(account))
+            .is_some_and(|chats| chats.contains(mid))
+    }
+
     pub fn chat_is_hidden(&self, account: Option<&str>, mid: &str) -> bool {
         account
             .and_then(|account| self.hidden_chats.get(account))
@@ -320,6 +329,8 @@ mod tests {
         );
         cfg.pinned_chats
             .insert("account-b".into(), BTreeSet::from(["other-chat".into()]));
+        cfg.memory_media_chats
+            .insert("account-a".into(), BTreeSet::from(["group-chat".into()]));
         cfg.muted_chats.insert(
             "account-a".into(),
             BTreeMap::from([("group-chat".into(), true)]),
@@ -336,6 +347,8 @@ mod tests {
         let restored = AppConfig::load(&dir);
         assert_eq!(restored.language, cfg.language);
         assert_eq!(restored.pinned_chats, cfg.pinned_chats);
+        assert!(restored.chat_memory_media(Some("account-a"), "group-chat"));
+        assert!(!restored.chat_memory_media(Some("account-b"), "group-chat"));
         assert!(restored.chat_is_muted(Some("account-a"), "group-chat", false));
         assert!(restored.chat_is_hidden(Some("account-a"), "group-chat"));
         assert_eq!(
@@ -372,6 +385,7 @@ mod tests {
     fn old_settings_start_without_chat_preferences() {
         let cfg: AppConfig = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
         assert!(cfg.pinned_chats.is_empty());
+        assert!(cfg.memory_media_chats.is_empty());
         assert!(cfg.hidden_chats.is_empty());
         assert!(cfg.muted_chats.is_empty());
         assert_eq!(cfg.language, "en");

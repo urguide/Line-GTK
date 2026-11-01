@@ -1,6 +1,21 @@
 //! Presentation and metadata interpretation belong to the application, not linejs.
 use serde_json::{Value, json};
 
+/// Stable, language-neutral previews shared by cached and live messages.
+/// Media messages often have no text, including in legacy normalized caches.
+pub fn preview<'a>(content_type: &str, text: &'a str) -> &'a str {
+    match content_type.to_ascii_uppercase().as_str() {
+        "IMAGE" => "Photo",
+        "VIDEO" => "Video",
+        "AUDIO" => "Voice message",
+        "STICKER" => "Sticker",
+        "FILE" => "File",
+        "FLEX" if text.trim().is_empty() => "Flex message",
+        _ if text.trim().is_empty() => "Message",
+        _ => text.trim(),
+    }
+}
+
 /// A failed message remains a row in the page, without displaying ciphertext
 /// or executing embedded Flex actions. Original metadata is retained for retry.
 pub fn from_envelope(envelope: &Value, account: &str) -> Value {

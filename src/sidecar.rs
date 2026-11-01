@@ -225,6 +225,7 @@ impl Sidecar {
     }
 
     fn stop_process(&self) {
+        let _ = self.core.memory.visible("", Default::default());
         self.core.audio.stop();
         // Invalidate the reader before closing stdout so an intentional restart
         // is not reported as an unexpected crash.
@@ -336,6 +337,29 @@ impl Sidecar {
         self.core
             .commands
             .send(line_rust_core::sync::Command::Retention(mode.to_owned()))?;
+        Ok(())
+    }
+
+    pub fn set_memory_media(&self, config: &crate::config::AppConfig) {
+        self.core
+            .memory
+            .configure(config.memory_media_chats.clone());
+    }
+
+    pub fn visible_media(&self, chat: &str, ids: Vec<String>) -> Result<()> {
+        if self
+            .core
+            .memory
+            .visible(chat, ids.iter().cloned().collect())
+        {
+            self.core
+                .commands
+                .send(line_rust_core::sync::Command::VisibleMedia {
+                    chat: chat.into(),
+                    ids,
+                    generation: self.generation.load(Ordering::SeqCst),
+                })?;
+        }
         Ok(())
     }
 

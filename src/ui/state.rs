@@ -96,6 +96,7 @@ pub(super) struct AppState {
     pub restored_last_chat: Rc<RefCell<bool>>,
     pub media_queue: Rc<RefCell<VecDeque<(String, String)>>>,
     pub media_pumping: Rc<RefCell<bool>>,
+    pub memory_visible: Rc<RefCell<HashSet<String>>>,
     pub stick_bottom: Rc<RefCell<bool>>,
     pub scroll_pinning: Rc<RefCell<bool>>,
     pub scroll_pin_gen: Rc<RefCell<u64>>,

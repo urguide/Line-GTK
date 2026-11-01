@@ -1,27 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="line-rust">
-  <!-- Transparent pad; bubble matches classic LINE silhouette, text says gtk -->
+  <!-- Rounded app tile and speech bubble, shared by all raster sizes. -->
+  <rect width="512" height="512" rx="56" fill="#101114"/>
   <path fill="#06C755" d="
-    M96 72
-    h320
-    c39.765 0 72 32.235 72 72
-    v176
-    c0 39.765-32.235 72-72 72
-    H248
-    l-72 88
-    v-88
-    H96
-    c-39.765 0-72-32.235-72-72
-    V144
-    c0-39.765 32.235-72 72-72
-    z"/>
-  <text
-    x="256"
-    y="268"
-    text-anchor="middle"
-    dominant-baseline="middle"
-    font-family="Arial Black, Arial, Helvetica, sans-serif"
-    font-size="148"
-    font-weight="900"
-    letter-spacing="2"
-    fill="#ffffff">gtk</text>
+    M204 53 H311
+    C405 53 481 129 481 223
+    V252
+    C481 346 405 422 311 422
+    H213
+    C176 422 149 442 105 458
+    C88 464 81 458 86 443
+    C94 424 103 399 97 389
+    C55 351 31 306 31 252
+    V223
+    C31 129 107 53 204 53 Z"/>
+  <!-- Bold forward-leaning L, outlined so rendering never depends on fonts. -->
+  <path fill="#ffffff" d="
+    M230 128 H280
+    Q292 128 288 140
+    L241 302 H350
+    Q362 302 358 314
+    L345 354
+    Q342 362 332 362
+    H174
+    Q160 362 164 348
+    L216 142
+    Q220 128 230 128 Z"/>
 </svg>

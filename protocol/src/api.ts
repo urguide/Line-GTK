@@ -14,6 +14,17 @@ export function createApi(
     TalkMessage.fromRawTalk(raw, client),
 ) {
   let busy = false;
+  const memoryDownloads = new Map<string, Blob>();
+  const memoryUploads = new Map<string, Uint8Array<ArrayBuffer>[]>();
+  async function uploadBlob(p: Json): Promise<Blob> {
+    const parts = p.memoryToken
+      ? memoryUploads.get(String(p.memoryToken))
+      : [await Deno.readFile(transferPath(p.transferName))];
+    if (!parts) throw new Error("invalid_memory_upload");
+    return new Blob(parts, {
+      type: String(p.mime || "application/octet-stream"),
+    });
+  }
   function client(): Client {
     const value = getClient();
     if (!value) throw new Error("not_logged_in");
@@ -29,6 +40,23 @@ export function createApi(
   async function rpc(method: string, p: Json): Promise<unknown> {
     const c = client();
     switch (method) {
+      case "bridge_memory_upload_start": {
+        memoryUploads.clear();
+        const token = crypto.randomUUID();
+        memoryUploads.set(token, []);
+        return { token };
+      }
+      case "bridge_memory_upload_chunk": {
+        const chunks = memoryUploads.get(String(p.token));
+        if (!chunks || typeof p.data !== "string" || p.data.length > 350000) {
+          throw new Error("invalid_memory_upload");
+        }
+        chunks.push(new Uint8Array(Buffer.from(p.data, "base64")));
+        return {};
+      }
+      case "bridge_memory_upload_release":
+        memoryUploads.delete(String(p.token));
+        return {};
       case "bridge_notes":
         return await notesRpc(c, String(p.action), p, transfer);
       case "bridge_fetch_page": {
@@ -207,9 +235,26 @@ export function createApi(
           },
         });
         return { sent: true };
+      case "bridge_memory_chunk": {
+        const blob = memoryDownloads.get(String(p.token));
+        const offset = Number(p.offset);
+        if (
+          !blob || !Number.isSafeInteger(offset) || offset < 0 ||
+          offset >= blob.size
+        ) {
+          throw new Error("invalid_memory_transfer");
+        }
+        const bytes = await blob.slice(offset, offset + 256 * 1024)
+          .arrayBuffer();
+        return { data: Buffer.from(bytes).toString("base64") };
+      }
+      case "bridge_memory_release":
+        memoryDownloads.delete(String(p.token));
+        return {};
+      case "bridge_memory_download":
       case "bridge_download": {
         const m = p.message as Json;
-        const tm = await TalkMessage.fromRawTalk(
+        const tm = await decode(
           unpackRaw(m.rawMessage) as Parameters<
             typeof TalkMessage.fromRawTalk
           >[0],
@@ -219,6 +264,12 @@ export function createApi(
           throw new Error("message_decode_failed");
         }
         const blob = await tm.getData(false);
+        if (method === "bridge_memory_download") {
+          memoryDownloads.clear();
+          const token = crypto.randomUUID();
+          memoryDownloads.set(token, blob);
+          return { token, mime: blob.type, bytes: blob.size };
+        }
         const name = `${crypto.randomUUID()}.part`;
         const path = transferPath(name);
         const file = await Deno.open(path, {
@@ -235,10 +286,7 @@ export function createApi(
         return { path, mime: blob.type, bytes: blob.size };
       }
       case "bridge_upload_plain_media": {
-        const bytes = await Deno.readFile(transferPath(p.transferName));
-        const data = new Blob([bytes], {
-          type: String(p.mime || "application/octet-stream"),
-        });
+        const data = await uploadBlob(p);
         const type = String(p.oType);
         if (!["image", "gif", "video", "audio", "file"].includes(type)) {
           throw new Error("invalid_media_type");
@@ -257,11 +305,12 @@ export function createApi(
       }
       case "bridge_send_media":
       case "bridge_send_media_e2ee_fallback": {
-        const bytes = await Deno.readFile(transferPath(p.transferName));
-        const data = new Blob([bytes], {
-          type: String(p.mime || "application/octet-stream"),
-        });
-        const preview = p.previewName
+        const data = await uploadBlob(p);
+        const preview = p.previewData
+          ? new Blob([Buffer.from(String(p.previewData), "base64")], {
+            type: "image/jpeg",
+          })
+          : p.previewName
           ? new Blob([await Deno.readFile(transferPath(p.previewName))], {
             type: "image/jpeg",
           })

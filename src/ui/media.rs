@@ -1,5 +1,71 @@
 use super::*;
 
+pub(super) fn update_memory_viewport(state: &AppState) {
+    if *state.scroll_pinning.borrow() || *state.history_loading.borrow() {
+        return;
+    }
+    let Some(chat) = state.current_chat.borrow().clone() else {
+        return;
+    };
+    if !chat_memory_media(state, &chat) {
+        return;
+    }
+    let height = state.message_scroll.height() as f32;
+    let mut visible = HashSet::new();
+    if state.window.is_visible() && state.msg_stack.visible_child_name().as_deref() == Some("list")
+    {
+        for (id, bubble) in state.media_slots.borrow().iter() {
+            if !state.media_msgs.borrow().get(id).is_some_and(|m| {
+                matches!(m.content_type.as_str(), "IMAGE" | "VIDEO") && !id.starts_with("pending-")
+            }) {
+                continue;
+            }
+            if bubble.is_mapped()
+                && let Some(bounds) = bubble.compute_bounds(&state.message_scroll)
+                && bounds.y() < height
+                && bounds.y() + bounds.height() > 0.0
+            {
+                visible.insert(id.clone());
+            }
+        }
+    }
+    let previous = state.memory_visible.borrow().clone();
+    if previous == visible {
+        return;
+    }
+    for id in previous.difference(&visible) {
+        state.media_ready_paths.borrow_mut().remove(id);
+        state.media_queue.borrow_mut().retain(|(mid, _)| mid != id);
+        if let Some(msg) = state.media_msgs.borrow_mut().get_mut(id) {
+            msg.image_path = None;
+            msg.file_path = None;
+        }
+        if let Some(bubble) = state.media_slots.borrow().get(id) {
+            // Keep allocation stable while releasing textures offscreen.
+            bubble.set_size_request(240, bubble.height().max(180));
+            let mut child = bubble.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                if widget.is::<gtk::Picture>()
+                    || widget.is::<gtk::Overlay>()
+                    || widget.has_css_class("line-media-placeholder")
+                    || widget.has_css_class("line-media-failed")
+                    || widget.has_css_class("line-video-placeholder")
+                {
+                    bubble.remove(&widget);
+                }
+            }
+            let placeholder = gtk::Label::new(Some(&crate::i18n::t("loading_image")));
+            placeholder.add_css_class("line-media-placeholder");
+            bubble.append(&placeholder);
+        }
+    }
+    *state.memory_visible.borrow_mut() = visible.clone();
+    let _ = state
+        .sidecar
+        .visible_media(&chat, visible.into_iter().collect());
+}
+
 pub(super) fn suggest_media_name(msg: &MessageInfo) -> String {
     if let Some(n) = msg.file_name.as_deref().filter(|s| !s.is_empty()) {
         return n.to_string();
@@ -24,6 +90,9 @@ pub(super) fn is_full_media_path(path: &str) -> bool {
 }
 
 pub(super) fn image_looks_low_res(path: &str) -> bool {
+    if crate::memory_media::is_ram_path(path) {
+        return false;
+    }
     if is_full_media_path(path) {
         return false;
     }
@@ -147,7 +216,11 @@ pub(super) fn request_media_download(state: &AppState, msg: &MessageInfo, action
         .cloned()
         .unwrap_or_else(|| msg.clone());
     let for_viewer = action == "open_viewer";
-    if let Some(path) = local_media_path(&msg, for_viewer) {
+    if let Some(path) = local_media_path(&msg, for_viewer)
+        && (!chat_memory_media(state, &chat_mid)
+            || !matches!(msg.content_type.as_str(), "IMAGE" | "VIDEO")
+            || crate::memory_media::is_ram_path(&path))
+    {
         finish_media_action(
             state,
             action,
@@ -297,6 +370,12 @@ pub(super) fn open_media_viewer(
         .default_height(def_h)
         .css_classes(["line-media-viewer"])
         .build();
+    // A viewer may outlive its row/viewport. Hold the anonymous original open.
+    let lease = RefCell::new(crate::memory_media::lease(path));
+    win.connect_close_request(move |_| {
+        lease.borrow_mut().take();
+        glib::Propagation::Proceed
+    });
 
     let root = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -369,6 +448,7 @@ pub(super) fn open_media_viewer(
     }
 
     bar.append(&open_ext);
+    open_ext.set_visible(!crate::memory_media::is_ram_path(path));
     bar.append(&dl);
     bar.append(&close);
     root.append(&bar);
@@ -886,7 +966,12 @@ pub(super) fn append_image_viewer(
                     .iter()
                     .map(|st| (st.color, st.width, st.points.clone()))
                     .collect();
-                match export_annotated_image(pixbuf.as_ref(), &packed, &s.data_dir) {
+                let memory = s
+                    .current_chat
+                    .borrow()
+                    .as_deref()
+                    .is_some_and(|mid| chat_memory_media(&s, mid));
+                match export_annotated_image(pixbuf.as_ref(), &packed, &s.data_dir, memory) {
                     Ok(p) => p,
                     Err(e) => {
                         toast(
@@ -1039,6 +1124,7 @@ pub(super) fn export_annotated_image(
     pixbuf: &gdk_pixbuf::Pixbuf,
     strokes: &[PackedStroke],
     data_dir: &std::path::Path,
+    memory: bool,
 ) -> anyhow::Result<PathBuf> {
     let w = pixbuf.width().max(1);
     let h = pixbuf.height().max(1);
@@ -1067,6 +1153,13 @@ pub(super) fn export_annotated_image(
         cr.stroke().map_err(|e| anyhow::anyhow!("stroke: {e}"))?;
     }
 
+    if memory {
+        let mut bytes = Vec::new();
+        surface
+            .write_to_png(&mut bytes)
+            .map_err(|e| anyhow::anyhow!("png: {e}"))?;
+        return Ok(crate::memory_media::stage_clipboard(&bytes)?.into());
+    }
     let dir = data_dir.join("cache/media");
     std::fs::create_dir_all(&dir)?;
     let dest = dir.join(format!(
@@ -1455,6 +1548,9 @@ pub fn pulse_sinks() -> Vec<(String, String)> {
 }
 
 pub(super) fn guess_media_o_type(path: &std::path::Path) -> &'static str {
+    if crate::memory_media::is_ram_path(&path.to_string_lossy()) {
+        return "image";
+    }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -1497,6 +1593,16 @@ pub(super) fn copy_into_media_cache(
     state: &AppState,
     src: &std::path::Path,
 ) -> anyhow::Result<PathBuf> {
+    if state
+        .current_chat
+        .borrow()
+        .as_deref()
+        .is_some_and(|mid| chat_memory_media(state, mid))
+        && (crate::memory_media::is_ram_path(&src.to_string_lossy())
+            || matches!(guess_media_o_type(src), "image" | "gif" | "video"))
+    {
+        return Ok(src.to_owned());
+    }
     let dir = state.data_dir.join("cache/media");
     std::fs::create_dir_all(&dir)?;
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("bin");
@@ -1824,6 +1930,12 @@ pub(super) fn pump_media_queue(state: &AppState) {
     let Some((message_id, image_path)) = next else {
         return;
     };
+    let ram = crate::memory_media::is_ram_path(&image_path);
+    if ram && !state.memory_visible.borrow().contains(&message_id) {
+        let state = state.clone();
+        glib::idle_add_local_once(move || pump_media_queue(&state));
+        return;
+    }
     if !std::path::Path::new(&image_path).exists() {
         mark_media_failed(state, &message_id);
         let state = state.clone();
@@ -1858,7 +1970,10 @@ pub(super) fn pump_media_queue(state: &AppState) {
 
     let (tx, rx) = async_channel::bounded::<Option<crate::sticker_anim::AnimFrames>>(1);
     let image_path2 = image_path.clone();
+    let lease = crate::memory_media::lease(&image_path);
+    let generation = *state.message_generation.borrow();
     std::thread::spawn(move || {
+        let _lease = lease;
         let loaded =
             crate::sticker_anim::load_scaled(&image_path2, max_px, animate).or_else(|| {
                 // Brief retry — avoids rare races right after atomic rename.
@@ -1869,6 +1984,14 @@ pub(super) fn pump_media_queue(state: &AppState) {
     });
     glib::spawn_future_local(async move {
         let frames = rx.recv().await.ok().flatten();
+        if *state2.message_generation.borrow() != generation {
+            return;
+        }
+        if ram && !state2.memory_visible.borrow().contains(&message_id2) {
+            *state2.media_pumping.borrow_mut() = false;
+            pump_media_queue(&state2);
+            return;
+        }
         if let Some(frames) = frames {
             let mut child = bubble2.first_child();
             while let Some(w) = child {

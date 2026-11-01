@@ -113,6 +113,11 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
         state.chat_subtitle.set_text(&crate::i18n::t("empty"));
         return;
     }
+    if let Some(mid) = state.current_chat.borrow().clone()
+        && let Some(message) = messages.last()
+    {
+        update_chat_preview(state, &mid, message);
+    }
 
     // Append in idle chunks so image-heavy threads don't freeze the window.
     let total = messages.len();
@@ -172,6 +177,25 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         .borrow_mut()
         .insert(msg.id.clone(), msg.clone());
 
+    let memory = state
+        .current_chat
+        .borrow()
+        .as_deref()
+        .is_some_and(|mid| chat_memory_media(state, mid))
+        && matches!(msg.content_type.as_str(), "IMAGE" | "VIDEO")
+        && !msg.id.starts_with("pending-");
+    let memory_msg;
+    let msg = if memory {
+        memory_msg = MessageInfo {
+            image_path: None,
+            file_path: None,
+            ..msg.clone()
+        };
+        &memory_msg
+    } else {
+        msg
+    };
+
     // Prefer a path that already finished hydrating (race with list rebuild).
     let ready_path = {
         let missing = msg
@@ -179,7 +203,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             .as_deref()
             .map(|p| !std::path::Path::new(p).exists())
             .unwrap_or(true);
-        if missing {
+        if missing && !memory {
             state
                 .media_ready_paths
                 .borrow()
@@ -295,6 +319,9 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     let is_file = msg.content_type.eq_ignore_ascii_case("file");
     let is_video = msg.content_type.eq_ignore_ascii_case("video");
     let is_image = msg.content_type.eq_ignore_ascii_case("image");
+    if memory {
+        bubble.set_size_request(240, 180);
+    }
     let has_audio = msg
         .audio_path
         .as_deref()
@@ -1553,6 +1580,12 @@ pub(super) fn clear_messages(state: &AppState) {
     *state.last_incoming_id.borrow_mut() = None;
     state.media_queue.borrow_mut().clear();
     *state.media_pumping.borrow_mut() = false;
+    state.memory_visible.borrow_mut().clear();
+    let _ = state.sidecar.visible_media("", vec![]);
+    state
+        .media_ready_paths
+        .borrow_mut()
+        .retain(|_, path| !crate::memory_media::is_ram_path(path));
     *state.new_sep_row.borrow_mut() = None;
     *state.pending_new_below.borrow_mut() = 0;
     state.jump_banner.set_reveal_child(false);
@@ -1591,35 +1624,30 @@ pub(super) fn set_msg_state(state: &AppState, name: &str, empty_text: Option<&st
 }
 
 pub(super) fn preview_body_ui(msg: &MessageInfo) -> String {
-    let ct = msg.content_type.to_ascii_uppercase();
-    match ct.as_str() {
-        "IMAGE" => crate::i18n::t("preview_photo"),
-        "VIDEO" => crate::i18n::t("preview_video"),
-        "STICKER" => crate::i18n::t("preview_sticker"),
-        "AUDIO" => crate::i18n::t("voice_message"),
-        "FILE" => crate::i18n::t("preview_file"),
-        "FLEX" => {
-            let t = msg.text.trim();
-            if t.is_empty() {
-                crate::i18n::t("preview_flex")
-            } else {
-                t.to_string()
-            }
-        }
-        _ => {
-            let t = msg.text.trim();
-            if t.is_empty() {
-                if ct.is_empty() {
-                    crate::i18n::t("preview_message")
-                } else {
-                    ct.to_ascii_lowercase()
-                }
-            } else if t.chars().count() > 64 {
-                format!("{}…", t.chars().take(63).collect::<String>())
-            } else {
-                t.to_string()
-            }
-        }
+    let text = localize_preview(line_rust_core::message::preview(
+        &msg.content_type,
+        &msg.text,
+    ));
+    if text.chars().count() > 64 {
+        format!("{}…", text.chars().take(63).collect::<String>())
+    } else {
+        text
+    }
+}
+
+pub(super) fn update_chat_preview(state: &AppState, mid: &str, msg: &MessageInfo) {
+    let mut chats = state.chats.borrow_mut();
+    let Some(chat) = chats.iter_mut().find(|chat| chat.mid == mid) else {
+        return;
+    };
+    // A cached page must not replace the preview of a newer live message.
+    if msg.created_time < chat.last_activity && !chat.preview.trim().is_empty() {
+        return;
+    }
+    chat.preview = preview_body_ui(msg);
+    chat.last_activity = chat.last_activity.max(msg.created_time);
+    if let Some(label) = state.chat_previews.borrow().get(mid) {
+        label.set_text(&chat.preview);
     }
 }
 
@@ -1641,15 +1669,19 @@ pub(super) fn localize_preview(preview: &str) -> String {
     // Localized media placeholders that may appear after the who-prefix.
     let replacements = [
         ("Photo", "preview_photo"),
+        ("[Image]", "preview_photo"),
         ("Video", "preview_video"),
+        ("[Video]", "preview_video"),
         ("Sticker", "preview_sticker"),
+        ("[Sticker]", "preview_sticker"),
         ("Voice message", "voice_message"),
         ("File", "preview_file"),
+        ("[File]", "preview_file"),
         ("Flex message", "preview_flex"),
         ("Message", "preview_message"),
         ("Tap to open", "tap_open"),
-        ("Loading last message…", "loading_last"),
-        ("Loading last message...", "loading_last"),
+        ("Loading last message…", "tap_open"),
+        ("Loading last message...", "tap_open"),
         ("No recent messages", "no_recent"),
         ("รูปภาพ", "preview_photo"),
         ("วิดีโอ", "preview_video"),
@@ -1659,7 +1691,7 @@ pub(super) fn localize_preview(preview: &str) -> String {
         ("ข้อความ Flex", "preview_flex"),
         ("ข้อความ", "preview_message"),
         ("แตะเพื่อเปิด", "tap_open"),
-        ("กำลังโหลดข้อความล่าสุด…", "loading_last"),
+        ("กำลังโหลดข้อความล่าสุด…", "tap_open"),
         ("ไม่มีข้อความล่าสุด", "no_recent"),
     ];
     if let Some((who, body)) = s.split_once(": ") {

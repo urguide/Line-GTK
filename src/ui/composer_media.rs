@@ -540,6 +540,14 @@ pub(super) fn save_clipboard_texture_png(
     tex: &gdk::Texture,
 ) -> anyhow::Result<PathBuf> {
     use gdk::prelude::TextureExt;
+    if state
+        .current_chat
+        .borrow()
+        .as_deref()
+        .is_some_and(|mid| chat_memory_media(state, mid))
+    {
+        return Ok(crate::memory_media::stage_clipboard(tex.save_to_png_bytes().as_ref())?.into());
+    }
     let dir = state.data_dir.join("cache/media");
     std::fs::create_dir_all(&dir)?;
     let dest = dir.join(format!(
@@ -558,6 +566,14 @@ pub(super) fn write_clipboard_bytes(
     bytes: &[u8],
     ext: &str,
 ) -> anyhow::Result<PathBuf> {
+    if state
+        .current_chat
+        .borrow()
+        .as_deref()
+        .is_some_and(|mid| chat_memory_media(state, mid))
+    {
+        return Ok(crate::memory_media::stage_clipboard(bytes)?.into());
+    }
     let dir = state.data_dir.join("cache/media");
     std::fs::create_dir_all(&dir)?;
     let dest = dir.join(format!(

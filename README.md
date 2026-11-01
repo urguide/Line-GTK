@@ -78,6 +78,18 @@ restoring rejected ownership. Failed sends never persist a successful message.
 All retention modes share `core/src/cache_policy.rs`; changes in Settings are
 sent immediately to the Rust worker and rechecked on subsequent requests.
 
+Right-click a chat and choose **Images/videos: memory only** to persist an
+account-local RAM-only policy; choose **Images/videos: restore disk cache** to
+disable it. These chats are not reopened automatically on launch. Image/video
+downloads start only for rows intersecting the selected chat's viewport; older
+history is requested by scrolling, without background gap repair. Originals and
+previews use anonymous Linux `memfd` handles, with chunked IPC and no disk transfer
+files or SQLite media blobs/paths. Offscreen media is released (an open viewer
+keeps its original until closed), and restarting discards all RAM media. Uploads
+and pasted images follow the same RAM-only policy. Text/message metadata still
+uses SQLite. Existing disk copies from before enabling the setting are not deleted;
+explicit **Save** still writes the requested file.
+
 | Mode | Latest message page | Chat list | Friends | Owned sticker packs | Disk chat lists | Disk messages |
 | --- | --- | --- | --- | --- | --- | --- |
 | Smart (default) | 20 min | 30 min | 30 min | 1 day | 360 days | Unlimited |
