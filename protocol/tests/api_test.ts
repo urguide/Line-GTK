@@ -1,9 +1,28 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import type { Client, TalkMessage } from "@evex/linejs";
 import { createApi } from "../src/api.ts";
-import { packRaw, unpackRaw } from "../src/raw_codec.ts";
+import { packRaw, unpackRaw, wireLine } from "../src/raw_codec.ts";
 import { coerceI64 } from "../src/messages.ts";
 import { unsendFromOperation } from "../src/events.ts";
+
+Deno.test("session and profile wire envelopes preserve bigint without crashing launcher", () => {
+  const profile = {
+    mid: "u1",
+    displayName: "User",
+    timestamp: 9007199254740993n,
+    nested: { revision: 9007199254740994n },
+  };
+  for (
+    const message of [{ event: "core_session", ...profile }, {
+      event: "session",
+      ...profile,
+    }, { id: 1, ok: true, result: profile }]
+  ) {
+    const line = wireLine(message);
+    assertEquals(line.endsWith("\n"), true);
+    assertEquals(JSON.parse(line), packRaw(message));
+  }
+});
 
 Deno.test("one decode failure preserves the page, original metadata and next cursor", async () => {
   const base = 9007199254740993n;

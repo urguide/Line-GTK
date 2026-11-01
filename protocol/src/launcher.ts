@@ -1,6 +1,7 @@
 /** Compiled launcher starts the sandboxed protocol worker with host-selected paths. */
 import { join } from "@std/path";
 import { permissions } from "./sandbox.ts";
+import { wireLine } from "./raw_codec.ts";
 const data = Deno.args[0] || Deno.env.get("LINE_GTK_DATA");
 if (!data) throw new Error("LINE_GTK_DATA or first argument required");
 // These roots are application IPC/auth areas, never the message database or user files.
@@ -20,7 +21,7 @@ worker.onerror = (e) => {
   ready.reject(new Error(e.message));
 };
 worker.onmessage = ({ data }) => {
-  Deno.stdout.writeSync(new TextEncoder().encode(`${JSON.stringify(data)}\n`));
+  Deno.stdout.writeSync(new TextEncoder().encode(wireLine(data)));
   if (data.event === "ready") ready.resolve();
 };
 worker.postMessage({ data });

@@ -388,6 +388,16 @@ impl Ipc {
     ) -> Result<Value> {
         self.active(generation)?;
         match method {
+            "profile_avatar" => {
+                let mid = p["mid"].as_str().context("profile ID missing")?;
+                let picture = line_gtk_core::catalog::picture(&p)
+                    .or_else(|| p["pictureUrl"].as_str().filter(|url| !url.is_empty()));
+                if let Some(path) = self.avatar(mid, picture, generation) {
+                    self.active(generation)?;
+                    self.emit(json!({"event":"avatar_ready","mid":mid,"avatarPath":path}));
+                }
+                Ok(json!({}))
+            }
             "list_chats" | "list_friends" => self.catalogs(method, &p["previous"], generation),
             "list_stickers" => self.sticker_catalog(&p, generation),
             "send_media" | "send_audio" => {

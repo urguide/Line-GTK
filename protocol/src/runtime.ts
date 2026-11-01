@@ -4,6 +4,7 @@ import { FileStorage } from "@evex/linejs/storage";
 import { AuthStore, type LineDevice } from "./auth.ts";
 import { createApi } from "./api.ts";
 import { attachLive, errorReport } from "./live.ts";
+import { packRaw } from "./raw_codec.ts";
 import * as calls from "./calls.ts";
 import { unsendFromOperation } from "./events.ts";
 
@@ -25,7 +26,9 @@ const storage = new FileStorage(`${protocolData}/linejs-storage.json`);
 let client: Client | null = null;
 let stopLive: (() => void) | null = null;
 function emit(value: Json) {
-  worker.postMessage(value);
+  // Profiles and Thrift responses may contain bigint, which cannot be written
+  // directly by the launcher's JSON serializer.
+  worker.postMessage(packRaw(value));
 }
 function event(name: string, payload: Json = {}) {
   emit({ event: name, ...payload });

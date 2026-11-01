@@ -41,7 +41,6 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             avatar_path,
             picture_url,
         } => {
-            *state.recovery_attempts.borrow_mut() = 0;
             let result = serde_json::json!({
                 "mid": mid,
                 "displayName": display_name,
@@ -705,6 +704,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
 const MAX_SIDECAR_RECOVERY_ATTEMPTS: u8 = 3;
 
 pub(super) fn schedule_sidecar_recovery(state: &AppState) {
+    *state.session_ready.borrow_mut() = false;
+    state.pending.borrow_mut().clear();
+    hide_upload_progress(state);
     let attempt = {
         let mut attempts = state.recovery_attempts.borrow_mut();
         if *attempts >= MAX_SIDECAR_RECOVERY_ATTEMPTS {
@@ -748,6 +750,21 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
             *state.session_ready.borrow_mut() = true;
+            // A session announcement is not proof of a stable process. Reset
+            // the crash budget only if this exact process stays alive a minute.
+            let stable_pid = state.sidecar.status().pid;
+            let stable_state = state.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_secs(60), move || {
+                let status = stable_state.sidecar.status();
+                if line_gtk_core::session::recovery_is_stable(
+                    stable_pid,
+                    status.pid,
+                    status.running,
+                    *stable_state.session_ready.borrow(),
+                ) {
+                    *stable_state.recovery_attempts.borrow_mut() = 0;
+                }
+            });
             apply_self_profile(
                 state,
                 &profile.mid,
@@ -761,6 +778,14 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
             state.profile_label.set_tooltip_text(
                 (!profile.status_message.is_empty()).then_some(profile.status_message.as_str()),
             );
+            // Own profile may be absent from contacts. Queue after self_mid is
+            // installed so even an immediate cache hit reaches the avatar UI.
+            if let Err(error) = state
+                .sidecar
+                .request("profile_avatar", Some(result.clone()))
+            {
+                tracing::warn!(%error, "failed to queue own profile avatar");
+            }
             state.stack.set_visible_child_name("shell");
             // Soft transitions only after we're past the cold boot.
             if state.config.borrow().animations {

@@ -1,5 +1,13 @@
 import { Buffer } from "node:buffer";
 
+/** stdout NDJSON must tolerate LINE's 64-bit integer fields. */
+export function wireLine(value: unknown): string {
+  return JSON.stringify(
+    value,
+    (_key, item) => typeof item === "bigint" ? item.toString() : item,
+  ) + "\n";
+}
+
 /** Lossless IPC encoding for LINE i64 identifiers and E2EE byte buffers. */
 export function packRaw(raw: unknown): unknown {
   return JSON.parse(JSON.stringify(raw, (_key, value) => {

@@ -152,6 +152,10 @@ impl Sidecar {
         let stdout = child.stdout.take().context("sidecar stdout missing")?;
         let stdin = child.stdin.take().context("sidecar stdin missing")?;
         let stderr = child.stderr.take().context("sidecar stderr missing")?;
+        // Publish the writable pipe before the reader can receive Ready/session
+        // and schedule commands on the UI/core workers.
+        *self.child.lock().map_err(|_| anyhow!("child lock"))? = Some(child);
+        *self.stdin.lock().map_err(|_| anyhow!("stdin lock"))? = Some(stdin);
         let tx = self.event_tx.clone();
         let pending_ids = self.pending_ids.clone();
         let current_generation = self.generation.clone();
@@ -176,8 +180,6 @@ impl Sidecar {
             })
             .context("failed to start sidecar stderr reader")?;
 
-        *self.child.lock().map_err(|_| anyhow!("child lock"))? = Some(child);
-        *self.stdin.lock().map_err(|_| anyhow!("stdin lock"))? = Some(stdin);
         Ok(())
     }
 
@@ -281,6 +283,7 @@ impl Sidecar {
                 | "send_postback"
                 | "list_chats"
                 | "list_friends"
+                | "profile_avatar"
                 | "list_stickers"
                 | "mark_read"
                 | "unsend_message"
@@ -626,11 +629,8 @@ fn read_loop_inner<R: std::io::Read>(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default()
                                 .to_string(),
-                            picture_path: resp
-                                .extra
-                                .get("picturePath")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string()),
+                            picture_path: line_gtk_core::catalog::picture(&resp.extra)
+                                .map(str::to_owned),
                             avatar_path: resp
                                 .extra
                                 .get("avatarPath")

@@ -556,6 +556,10 @@ impl Ipc {
             let chat_mid = event["chatMid"].as_str().unwrap_or_default().to_owned();
             let message_id = event["messageId"].as_str().unwrap_or_default().to_owned();
             match event["event"].as_str() {
+                Some("avatar_ready") => Some(ProtocolEvent::AvatarReady {
+                    mid: event["mid"].as_str().unwrap_or_default().into(),
+                    avatar_path: event["avatarPath"].as_str().unwrap_or_default().into(),
+                }),
                 Some("chat_mute") => Some(ProtocolEvent::ChatMute {
                     mid: event["mid"].as_str().unwrap_or_default().to_owned(),
                     muted: event["muted"].as_bool().unwrap_or(false),
@@ -597,6 +601,34 @@ impl Ipc {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+    #[test]
+    fn own_profile_avatar_is_loaded_from_rust_cache_and_forwarded_to_ui() {
+        let root = std::env::temp_dir().join(format!("line-own-avatar-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("cache/avatars")).unwrap();
+        let path = root.join("cache/avatars/u1.jpg");
+        std::fs::write(&path, b"cached avatar").unwrap();
+        let (events, rx) = async_channel::unbounded();
+        let ipc = Ipc {
+            stdin: Arc::new(Mutex::new(None)),
+            replies: Arc::default(),
+            ids: Arc::new(AtomicU64::new(1)),
+            generation: Arc::new(AtomicU64::new(1)),
+            events,
+            data: root.clone(),
+            asset_at: Mutex::new(None),
+        };
+        ipc.application(
+            "profile_avatar",
+            json!({"mid":"u1","pictureStatus":"/avatar"}),
+            1,
+        )
+        .unwrap();
+        assert!(
+            matches!(rx.try_recv().unwrap(),ProtocolEvent::AvatarReady{mid,avatar_path} if mid=="u1"&&Path::new(&avatar_path)==path)
+        );
+        assert_eq!(ipc.ids.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn recoverable_protocol_errors_keep_live_messages_but_auth_failure_stops_session_once() {
         let (commands, rx) = mpsc::channel();
