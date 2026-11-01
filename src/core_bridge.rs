@@ -759,6 +759,7 @@ impl Ipc {
                     mid: event["mid"].as_str().unwrap_or_default().into(),
                     avatar_path: event["avatarPath"].as_str().unwrap_or_default().into(),
                 }),
+                Some("expression_state") => Some(ProtocolEvent::ExpressionState(event.clone())),
                 Some("chat_mute") => Some(ProtocolEvent::ChatMute {
                     mid: event["mid"].as_str().unwrap_or_default().to_owned(),
                     muted: event["muted"].as_bool().unwrap_or(false),

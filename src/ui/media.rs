@@ -795,9 +795,34 @@ pub(super) fn append_image_viewer(
                 if let Some(dest) = slot.as_ref() {
                     // Transparent edges so the themed DrawingArea background shows through.
                     dest.fill(0);
-                    pixbuf.scale(dest, 0, 0, width, height, ox, oy, z, z, interp);
+                    // GdkPixbuf repeats edge pixels outside the transformed source.
+                    // Scale only its intersection with the viewport, leaving margins clear.
+                    let image_w = pixbuf.width() as f64 * z;
+                    let image_h = pixbuf.height() as f64 * z;
+                    let left = ox.floor().clamp(0.0, width as f64) as i32;
+                    let top = oy.floor().clamp(0.0, height as f64) as i32;
+                    let right = (ox + image_w).ceil().clamp(0.0, width as f64) as i32;
+                    let bottom = (oy + image_h).ceil().clamp(0.0, height as f64) as i32;
+                    if right > left && bottom > top {
+                        pixbuf.scale(
+                            dest,
+                            left,
+                            top,
+                            right - left,
+                            bottom - top,
+                            ox,
+                            oy,
+                            z,
+                            z,
+                            interp,
+                        );
+                    }
+                    let _ = cr.save();
+                    cr.rectangle(ox, oy, image_w, image_h);
+                    cr.clip();
                     gdk::prelude::GdkCairoContextExt::set_source_pixbuf(cr, dest, 0.0, 0.0);
                     let _ = cr.paint();
+                    let _ = cr.restore();
                 }
             }
 

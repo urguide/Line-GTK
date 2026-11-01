@@ -10,6 +10,8 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod expressions;
+
 /// Implemented by the host's IPC transport; no GTK or JavaScript scheduling here.
 pub trait Transport: Send + 'static {
     fn call(&self, method: &str, params: Value, generation: u64) -> Result<Value>;
@@ -78,6 +80,9 @@ pub enum Command {
 }
 
 enum Work {
+    Expression {
+        generation: u64,
+    },
     Media {
         chat: String,
         row: Value,
@@ -110,6 +115,8 @@ pub struct Engine<T: Transport> {
     last_media: Option<Instant>,
     page_pause: Duration,
     media_pause: Duration,
+    expression_jobs: Vec<crate::expression_jobs::DownloadJob>,
+    expression_scheduled: bool,
 }
 
 impl<T: Transport> Engine<T> {
@@ -134,6 +141,8 @@ impl<T: Transport> Engine<T> {
             last_media: None,
             page_pause: Duration::from_secs(1),
             media_pause: Duration::from_millis(500),
+            expression_jobs: Vec::new(),
+            expression_scheduled: false,
         }
     }
 
@@ -340,6 +349,15 @@ impl<T: Transport> Engine<T> {
                 }
                 let result = (|| {
                     self.valid(generation)?;
+                    if matches!(
+                        method.as_str(),
+                        "expression_local"
+                            | "expression_queue"
+                            | "enqueue_expressions"
+                            | "stop_expressions"
+                    ) {
+                        return self.expression_operation(&method, &params, generation);
+                    }
                     if method == "mute_chat" {
                         let mid = params["mid"].as_str().unwrap_or_default();
                         if !mid.starts_with('u') || mid.len() < 2 {
@@ -641,10 +659,15 @@ impl<T: Transport> Engine<T> {
                         let kind = params["kind"].as_str().unwrap_or("all");
                         if matches!(kind, "all" | "messages") {
                             self.background.clear();
+                            self.expression_scheduled = false;
                             self.queued_media.clear();
                             self.queued_gaps.clear();
                         }
                         self.store.clear_scope(kind)?;
+                        if matches!(kind, "all" | "stickers") {
+                            self.expressions_cache_cleared(generation)?;
+                        }
+                        self.schedule_expressions(generation);
                     }
                     Ok(value)
                 })();
@@ -697,6 +720,8 @@ impl<T: Transport> Engine<T> {
                     return Ok(true);
                 }
                 self.background.clear();
+                self.expression_scheduled = false;
+                self.expression_jobs.clear();
                 self.queued_media.clear();
                 self.queued_gaps.clear();
                 self.account = account;
@@ -707,6 +732,7 @@ impl<T: Transport> Engine<T> {
                     return Ok(true);
                 }
                 self.store.import_legacy(&self.legacy)?;
+                self.restore_expression_jobs(generation)?;
             }
             Command::Fetch {
                 id,
@@ -806,9 +832,11 @@ impl<T: Transport> Engine<T> {
                 let result = (|| {
                     self.valid(generation)?;
                     self.background.clear();
+                    self.expression_scheduled = false;
                     self.queued_media.clear();
                     self.queued_gaps.clear();
                     self.store.clear()?;
+                    self.schedule_expressions(generation);
                     Ok(json!({"cleared":"messages"}))
                 })();
                 self.response(id, result, generation);
@@ -819,6 +847,10 @@ impl<T: Transport> Engine<T> {
 
     fn background(&mut self, work: Work) -> Result<()> {
         match work {
+            Work::Expression { generation } => {
+                self.expression_scheduled = false;
+                self.expression_step(generation)?;
+            }
             Work::Media {
                 chat,
                 row,
@@ -894,6 +926,7 @@ impl<T: Transport> Engine<T> {
                 Err(mpsc::TryRecvError::Empty) => {
                     if self.generation.load(Ordering::SeqCst) != self.session_generation {
                         self.background.clear();
+                        self.expression_scheduled = false;
                         self.queued_media.clear();
                         self.queued_gaps.clear();
                     }

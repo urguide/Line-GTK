@@ -130,6 +130,10 @@ pub(super) struct AppState {
     pub sticker_popover: gtk::Popover,
     pub expression_ui: Rc<RefCell<Option<Rc<super::expressions::LibraryUi>>>>,
     pub emoji_catalog: Rc<RefCell<serde_json::Value>>,
+    pub expression_catalogs: Rc<RefCell<HashMap<String, serde_json::Value>>>,
+    pub expression_downloads: Rc<RefCell<serde_json::Value>>,
+    pub expression_picker_kind: Rc<RefCell<String>>,
+    pub expression_thumbs: Rc<RefCell<super::expressions::ThumbCache>>,
     pub call_btn: gtk::Button,
     pub mute_btn: gtk::Button,
     pub notes_btn: gtk::Button,
@@ -206,10 +210,7 @@ pub(super) enum Pending {
         picture: glib::WeakRef<gtk::Picture>,
         placeholder: glib::WeakRef<gtk::Image>,
     },
-    ExpressionDownload {
-        ui: std::rc::Weak<super::expressions::LibraryUi>,
-        package: String,
-    },
+    ExpressionQueue,
     EmojiImages {
         view: glib::WeakRef<gtk::TextView>,
         text: String,

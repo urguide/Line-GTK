@@ -13,10 +13,6 @@ pub(super) struct LibraryUi {
     refresh: gtk::Button,
     stop: gtk::Button,
     checks: RefCell<Vec<(String, gtk::CheckButton, gtk::Label)>>,
-    queue: RefCell<VecDeque<String>>,
-    total: RefCell<usize>,
-    done: RefCell<usize>,
-    failed: RefCell<usize>,
     busy: RefCell<bool>,
     icons: RefCell<VecDeque<(String, gtk::Picture, gtk::Image)>>,
 }
@@ -31,7 +27,6 @@ pub(super) fn open_library(state: &AppState, kind: &str) {
     }
     let window = libadwaita::Window::builder()
         .transient_for(&state.window)
-        .modal(true)
         .title(crate::i18n::t(if kind == "emoji" {
             "emojis"
         } else {
@@ -88,10 +83,6 @@ pub(super) fn open_library(state: &AppState, kind: &str) {
         refresh,
         stop,
         checks: RefCell::new(Vec::new()),
-        queue: RefCell::new(VecDeque::new()),
-        total: RefCell::new(0),
-        done: RefCell::new(0),
-        failed: RefCell::new(0),
         busy: RefCell::new(false),
         icons: RefCell::new(VecDeque::new()),
     });
@@ -100,27 +91,29 @@ pub(super) fn open_library(state: &AppState, kind: &str) {
         let s = state.clone();
         button.connect_clicked(move |_| {
             if let Some(ui) = weak.upgrade() {
-                *ui.queue.borrow_mut() = ui
+                let packages: Vec<_> = ui
                     .checks
                     .borrow()
                     .iter()
                     .filter(|(_, check, _)| check.is_sensitive() && (all || check.is_active()))
                     .map(|(id, _, _)| id.clone())
                     .collect();
-                *ui.total.borrow_mut() = ui.queue.borrow().len();
-                *ui.done.borrow_mut() = 0;
-                *ui.failed.borrow_mut() = 0;
-                ui.progress.set_fraction(0.0);
-                next_download(&s, &ui);
+                if packages.is_empty() {
+                    return;
+                }
+                queue_request(
+                    &s,
+                    "enqueue_expressions",
+                    json!({"kind":ui.kind,"packages":packages}),
+                );
             }
         });
     }
     let weak = Rc::downgrade(&ui);
+    let s = state.clone();
     ui.stop.connect_clicked(move |_| {
         if let Some(ui) = weak.upgrade() {
-            ui.queue.borrow_mut().clear();
-            ui.stop.set_sensitive(false);
-            ui.status.set_text(&crate::i18n::t("expressions_stopping"));
+            queue_request(&s, "stop_expressions", json!({"kind":ui.kind}));
         }
     });
     let weak = Rc::downgrade(&ui);
@@ -142,9 +135,15 @@ pub(super) fn open_library(state: &AppState, kind: &str) {
 
 pub(super) fn close(state: &AppState) {
     *state.emoji_catalog.borrow_mut() = Value::Null;
+    state.expression_catalogs.borrow_mut().clear();
+    *state.expression_downloads.borrow_mut() = Value::Null;
+    let epoch = state.expression_thumbs.borrow().epoch.wrapping_add(1);
+    *state.expression_thumbs.borrow_mut() = ThumbCache {
+        epoch,
+        ..Default::default()
+    };
     let ui = state.expression_ui.borrow_mut().take();
     if let Some(ui) = ui {
-        ui.queue.borrow_mut().clear();
         ui.window.close();
     }
     state.sticker_popover.popdown();
@@ -186,8 +185,14 @@ fn busy(ui: &LibraryUi, value: bool) {
 }
 
 fn request_library(state: &AppState, ui: &Rc<LibraryUi>, force: bool) {
+    let cached = state.expression_catalogs.borrow().get(&ui.kind).cloned();
+    if let Some(cached) = cached {
+        fill_library(state, ui, &cached);
+    }
     busy(ui, true);
-    ui.status.set_text(&crate::i18n::t("loading_stickers"));
+    if ui.checks.borrow().is_empty() {
+        ui.status.set_text(&crate::i18n::t("loading_stickers"));
+    }
     match state.sidecar.request(
         "expression_library",
         Some(json!({"kind":ui.kind,"force":force})),
@@ -210,6 +215,7 @@ pub(super) fn load_failed(ui: &LibraryUi, error: &str) {
 }
 
 pub(super) fn fill_library(state: &AppState, ui: &Rc<LibraryUi>, result: &Value) {
+    cache_catalog(state, &ui.kind, result);
     ui.icons.borrow_mut().clear();
     while let Some(child) = ui.rows.first_child() {
         ui.rows.remove(&child);
@@ -274,6 +280,7 @@ pub(super) fn fill_library(state: &AppState, ui: &Rc<LibraryUi>, result: &Value)
         )
     });
     next_icon(state, ui);
+    update_progress(state, ui);
 }
 
 fn next_icon(state: &AppState, ui: &Rc<LibraryUi>) {
@@ -320,77 +327,267 @@ pub(super) fn icon_done(
     next_icon(state, ui);
 }
 
-fn next_download(state: &AppState, ui: &Rc<LibraryUi>) {
-    let next = ui.queue.borrow_mut().pop_front();
-    let Some(package) = next else {
-        busy(ui, false);
-        ui.stop.set_sensitive(false);
-        ui.status.set_text(&crate::i18n::tf(
-            "expressions_finished",
-            &[
-                ("done", &ui.done.borrow().to_string()),
-                ("failed", &ui.failed.borrow().to_string()),
-            ],
-        ));
-        return;
-    };
-    busy(ui, true);
-    ui.stop.set_sensitive(true);
-    ui.status.set_text(&crate::i18n::tf(
-        "expressions_downloading",
-        &[
-            (
-                "current",
-                &(*ui.done.borrow() + *ui.failed.borrow() + 1).to_string(),
-            ),
-            ("total", &ui.total.borrow().to_string()),
-        ],
-    ));
-    if let Some((_, _, status)) = ui.checks.borrow().iter().find(|(id, _, _)| id == &package) {
-        status.set_text(&crate::i18n::t("loading_stickers"));
-    }
-    match state.sidecar.request(
-        "download_expression",
-        Some(json!({"kind":ui.kind,"packageId":package})),
-    ) {
+fn queue_request(state: &AppState, method: &str, params: Value) {
+    match state.sidecar.request(method, Some(params)) {
         Ok(id) => {
-            state.pending.borrow_mut().insert(
-                id,
-                Pending::ExpressionDownload {
-                    ui: Rc::downgrade(ui),
-                    package,
-                },
-            );
+            state
+                .pending
+                .borrow_mut()
+                .insert(id, Pending::ExpressionQueue);
         }
-        Err(error) => download_done(state, ui, &package, Err(&error.to_string())),
+        Err(error) => toast(state, &error.to_string()),
     }
 }
 
-pub(super) fn download_done(
-    state: &AppState,
-    ui: &Rc<LibraryUi>,
-    package: &str,
-    result: Result<&Value, &str>,
-) {
-    if result.is_ok() {
-        *ui.done.borrow_mut() += 1;
-    } else {
-        *ui.failed.borrow_mut() += 1;
+pub(super) fn preload(state: &AppState) {
+    for kind in ["sticker", "emoji"] {
+        request_local(state, kind);
     }
-    if let Some((_, check, status)) = ui.checks.borrow().iter().find(|(id, _, _)| id == package) {
-        check.set_sensitive(result.is_err());
-        check.set_active(result.is_err());
-        status.set_text(&crate::i18n::t(if result.is_ok() {
-            "expressions_downloaded"
-        } else {
-            "expressions_failed"
-        }));
-        status.set_tooltip_text(result.err());
+    queue_request(state, "expression_queue", json!({}));
+}
+
+pub(super) fn request_local(state: &AppState, kind: &str) {
+    if let Ok(id) = state
+        .sidecar
+        .request("expression_local", Some(json!({"kind":kind})))
+    {
+        state
+            .pending
+            .borrow_mut()
+            .insert(id, Pending::ListStickers { kind: kind.into() });
     }
-    ui.progress.set_fraction(
-        (*ui.done.borrow() + *ui.failed.borrow()) as f64 / (*ui.total.borrow()).max(1) as f64,
-    );
-    next_download(state, ui);
+}
+
+pub(super) fn cache_catalog(state: &AppState, kind: &str, result: &Value) {
+    let changed = state.expression_catalogs.borrow().get(kind) != Some(result);
+    state
+        .expression_catalogs
+        .borrow_mut()
+        .insert(kind.into(), result.clone());
+    if kind == "emoji" {
+        *state.emoji_catalog.borrow_mut() = result.clone();
+    }
+    if !changed {
+        return;
+    }
+    let mut paths = Vec::new();
+    for pack in result["packs"].as_array().into_iter().flatten().take(80) {
+        if let Some(path) = pack["iconPath"].as_str() {
+            paths.push(path.to_owned());
+        }
+    }
+    for item in result["packs"][0]["stickers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(48)
+    {
+        if let Some(path) = item["imagePath"].as_str() {
+            paths.push(path.to_owned());
+        }
+    }
+    for path in paths {
+        load_thumb(state, None, path);
+    }
+}
+
+pub(super) fn catalog_ready(state: &AppState, kind: &str, result: &Value) {
+    if result["account"].is_string()
+        && result["account"].as_str() != state.self_mid.borrow().as_deref()
+    {
+        return;
+    }
+    let changed = state.expression_catalogs.borrow().get(kind) != Some(result);
+    cache_catalog(state, kind, result);
+    if changed
+        && state.sticker_popover.is_visible()
+        && *state.expression_picker_kind.borrow() == kind
+    {
+        fill_sticker_popover(state, result, kind);
+    }
+}
+
+pub(super) fn queue_state(state: &AppState, result: &Value) {
+    if result["account"].as_str() != state.self_mid.borrow().as_deref() {
+        return;
+    }
+    *state.expression_downloads.borrow_mut() = result.clone();
+    if let Some(kind) = result["kind"].as_str()
+        && result["catalog"].is_object()
+    {
+        catalog_ready(state, kind, &result["catalog"]);
+    }
+    if let Some(ui) = state.expression_ui.borrow().as_ref() {
+        update_progress(state, ui);
+    }
+}
+
+fn update_progress(state: &AppState, ui: &LibraryUi) {
+    let snapshot = state.expression_downloads.borrow();
+    let jobs: Vec<_> = snapshot["jobs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|j| j["kind"] == ui.kind)
+        .collect();
+    let pending = jobs
+        .iter()
+        .filter(|j| matches!(j["status"].as_str(), Some("queued" | "downloading")))
+        .count();
+    let done = jobs.iter().filter(|j| j["status"] == "done").count();
+    let failed = jobs.iter().filter(|j| j["status"] == "failed").count();
+    for (id, check, label) in ui.checks.borrow().iter() {
+        if let Some(job) = jobs.iter().find(|j| j["package"] == *id) {
+            let status = job["status"].as_str().unwrap_or_default();
+            // Completed jobs are historical; disk validation is authoritative after cache clearing.
+            if status == "done" {
+                let installed = state
+                    .expression_catalogs
+                    .borrow()
+                    .get(&ui.kind)
+                    .is_some_and(|c| {
+                        c["products"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|p| p["id"] == *id && p["downloaded"] == true)
+                    });
+                check.set_sensitive(!installed);
+                label.set_text(&crate::i18n::t(if installed {
+                    "expressions_downloaded"
+                } else {
+                    "expressions_not_downloaded"
+                }));
+            } else {
+                check.set_sensitive(!matches!(status, "queued" | "downloading"));
+                label.set_text(&crate::i18n::t(match status {
+                    "queued" => "expressions_queued",
+                    "downloading" => "expressions_background_active",
+                    "failed" => "expressions_failed",
+                    _ => "expressions_not_downloaded",
+                }));
+                if status == "downloading" {
+                    label.set_text(&format!(
+                        "{} {}/{}",
+                        crate::i18n::t("expressions_background_active"),
+                        job["done"],
+                        job["total"]
+                    ));
+                }
+            }
+            if !check.is_sensitive() {
+                check.set_active(false);
+            }
+            label.set_tooltip_text(job["error"].as_str());
+        }
+    }
+    ui.stop.set_sensitive(pending > 0);
+    if !jobs.is_empty() {
+        ui.progress
+            .set_fraction((done + failed) as f64 / jobs.len() as f64);
+        ui.status.set_text(&crate::i18n::tf(
+            "expressions_background_status",
+            &[
+                ("pending", &pending.to_string()),
+                ("done", &done.to_string()),
+                ("failed", &failed.to_string()),
+            ],
+        ));
+    }
+}
+
+#[derive(Default)]
+pub(super) struct ThumbCache {
+    epoch: u64,
+    active: usize,
+    decode_queue: VecDeque<String>,
+    textures: HashMap<String, gdk::Texture>,
+    order: VecDeque<String>,
+    waiting: HashMap<String, Vec<glib::WeakRef<gtk::Picture>>>,
+}
+
+pub(super) fn attach_thumb(state: &AppState, picture: gtk::Picture, path: String) {
+    load_thumb(state, Some(picture), path);
+}
+
+fn load_thumb(state: &AppState, picture: Option<gtk::Picture>, path: String) {
+    if path.is_empty() {
+        return;
+    }
+    let cache = state.expression_thumbs.clone();
+    {
+        let mut c = cache.borrow_mut();
+        if let Some(texture) = c.textures.get(&path) {
+            if let Some(picture) = picture {
+                picture.set_paintable(Some(texture));
+            }
+            c.order.retain(|key| key != &path);
+            c.order.push_back(path);
+            return;
+        }
+        let waiter = picture.map(|p| p.downgrade());
+        if let Some(waiting) = c.waiting.get_mut(&path) {
+            waiting.extend(waiter);
+            return;
+        }
+        c.waiting.insert(path.clone(), waiter.into_iter().collect());
+        c.decode_queue.push_back(path);
+    }
+    pump_thumbs(cache);
+}
+
+fn pump_thumbs(cache: Rc<RefCell<ThumbCache>>) {
+    let (path, epoch) = {
+        let mut c = cache.borrow_mut();
+        if c.active >= 2 {
+            return;
+        }
+        let Some(path) = c.decode_queue.pop_front() else {
+            return;
+        };
+        c.active += 1;
+        (path, c.epoch)
+    };
+    let (tx, rx) = async_channel::bounded(1);
+    let file = path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send_blocking(crate::sticker_anim::load_scaled(&file, 96, false));
+    });
+    let next = cache.clone();
+    glib::spawn_future_local(async move {
+        let texture = rx
+            .recv()
+            .await
+            .ok()
+            .flatten()
+            .and_then(|frames| frames.frames.first().and_then(raw_frame_to_pixbuf))
+            .map(|pb| gdk::Texture::for_pixbuf(&pb));
+        let mut c = cache.borrow_mut();
+        if c.epoch != epoch {
+            return;
+        }
+        c.active -= 1;
+        let Some(waiting) = c.waiting.remove(&path) else {
+            return;
+        };
+        if let Some(texture) = texture {
+            for picture in waiting {
+                if let Some(picture) = picture.upgrade() {
+                    picture.set_paintable(Some(&texture));
+                }
+            }
+            c.textures.insert(path.clone(), texture);
+            c.order.push_back(path);
+            while c.order.len() > 256 {
+                if let Some(old) = c.order.pop_front() {
+                    c.textures.remove(&old);
+                }
+            }
+        }
+        drop(c);
+        pump_thumbs(cache);
+    });
+    pump_thumbs(next);
 }
 
 pub(super) fn append_inline(state: &AppState, bubble: &gtk::Box, msg: &MessageInfo) {

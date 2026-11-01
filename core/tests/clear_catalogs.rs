@@ -85,6 +85,9 @@ impl Transport for Offline {
         if method == "clear_cache" {
             return Ok(json!({"cleared":p["kind"]}));
         }
+        if method == "expression_library" {
+            return Ok(json!({"packs":[],"products":p["products"]}));
+        }
         assert!(matches!(method, "list_chats" | "list_friends"));
         assert!(p["previous"]["chats"].is_null());
         assert!(p["previous"]["friends"].is_null());
@@ -115,7 +118,14 @@ fn run_offline(store: Store, legacy: PathBuf, clear: Option<&str>) {
             generation: 1,
         })
         .unwrap();
-        let result = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let result = loop {
+            let event = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if event["event"] == "expression_state" {
+                assert_eq!(event["catalog"]["packs"], json!([]));
+                continue;
+            }
+            break event;
+        };
         assert_eq!(result["ok"], true);
     }
     for (id, method) in [(2, "list_chats"), (3, "list_friends")] {

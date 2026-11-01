@@ -18,6 +18,7 @@ pub(super) fn pump_events(state: AppState) {
 
 pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
     match ev {
+        ProtocolEvent::ExpressionState(value) => super::expressions::queue_state(state, &value),
         ProtocolEvent::Ready { has_auth } => {
             let restarting = *state.restarting.borrow();
             if restarting {
@@ -622,19 +623,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                             super::expressions::load_failed(&ui, err);
                         }
                     }
-                    Some(Pending::ExpressionDownload { ui, package }) => {
-                        if let Some(ui) = ui.upgrade() {
-                            super::expressions::download_done(state, &ui, package, Err(err));
-                        }
-                        return;
-                    }
-                    Some(Pending::ListStickers { kind }) if state.sticker_popover.is_visible() => {
-                        fill_sticker_popover(
-                            state,
-                            &serde_json::json!({"packs":[],"error":err}),
-                            kind,
-                        );
-                    }
+                    Some(Pending::ListStickers { .. }) => return,
                     _ => {}
                 }
                 if matches!(pending, Some(Pending::Unsend { .. })) {
@@ -726,6 +715,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     if let Ok(msg) = serde_json::from_value::<MessageInfo>(
                         result.get("message").cloned().unwrap_or_default(),
                     ) {
+                        if msg.content_type == "STICKER" {
+                            super::expressions::request_local(state, "sticker");
+                        }
                         update_chat_preview(state, &chat_mid, &msg);
                         if state.current_chat.borrow().as_deref() != Some(chat_mid.as_str()) {
                             return;
@@ -738,20 +730,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     }
                 }
                 Some(Pending::ListStickers { kind }) => {
-                    if state.sticker_popover.is_visible() {
-                        fill_sticker_popover(state, &result, &kind);
-                    }
+                    super::expressions::catalog_ready(state, &kind, &result);
                 }
                 Some(Pending::ExpressionLibrary { ui }) => {
                     if let Some(ui) = ui.upgrade() {
                         super::expressions::fill_library(state, &ui, &result);
                     }
                 }
-                Some(Pending::ExpressionDownload { ui, package }) => {
-                    if let Some(ui) = ui.upgrade() {
-                        super::expressions::download_done(state, &ui, &package, Ok(&result));
-                    }
-                }
+                Some(Pending::ExpressionQueue) => super::expressions::queue_state(state, &result),
                 Some(Pending::ExpressionIcon {
                     ui,
                     picture,
@@ -879,6 +865,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
             state.profile_label.set_tooltip_text(
                 (!profile.status_message.is_empty()).then_some(profile.status_message.as_str()),
             );
+            super::expressions::preload(state);
             // Own profile may be absent from contacts. Queue after self_mid is
             // installed so even an immediate cache hit reaches the avatar UI.
             if let Err(error) = state

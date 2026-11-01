@@ -19,8 +19,25 @@ impl Ipc {
             .as_array()
             .cloned()
             .unwrap_or_default();
+        packs.retain(|pack| pack["id"] != "__recent__");
         // Recheck files on every open; clearing the cache must never leave broken buttons.
         for pack in &mut packs {
+            let package = string(&pack["id"]);
+            if line_rust_core::expressions::valid_id(&package) {
+                let icon = if p["kind"] == "emoji" {
+                    self.data
+                        .join("cache/stickers/emoji")
+                        .join(&package)
+                        .join("main.png")
+                } else {
+                    self.data
+                        .join("cache/stickers")
+                        .join(format!("pack-{package}.png"))
+                };
+                if icon.is_file() {
+                    pack["iconPath"] = json!(icon);
+                }
+            }
             let complete = pack["stickers"].as_array().is_some_and(|items| {
                 !items.is_empty()
                     && items.iter().all(|s| {
@@ -107,6 +124,9 @@ impl Ipc {
             self.asset(&format!("https://stickershop.line-scdn.net/sticonshop/v1/{package}/sticon/iphone/meta.json"), &meta_path, generation)?;
             let meta = serde_json::from_slice(&std::fs::read(&meta_path)?)?;
             let mut pack = expressions::emoji_pack(&meta, product)?;
+            if p["prepare"] == true {
+                return Ok(pack);
+            }
             for item in pack["stickers"].as_array_mut().unwrap() {
                 let id = string(&item["stickerId"]);
                 let path = self.asset(&format!("https://stickershop.line-scdn.net/sticonshop/v1/sticon/{package}/android/{id}.png"), &root.join(format!("{id}.png")), generation)?;
@@ -117,7 +137,7 @@ impl Ipc {
             return Ok(pack);
         }
         let result = self.sticker_catalog(
-            &json!({"owned":[product],"previous":{},"recent":[]}),
+            &json!({"owned":[product],"previous":{},"recent":[],"prepare":p["prepare"]}),
             generation,
         )?;
         if result["partial"] == true {
@@ -295,12 +315,18 @@ impl Ipc {
             },
             |id| {
                 self.active(generation)?;
+                if p["prepare"] == true {
+                    return Ok(String::new());
+                }
                 Ok(self
                     .sticker(id, false, generation)?
                     .to_string_lossy()
                     .into_owned())
             },
         )?;
+        if p["prepare"] == true {
+            return Ok(result);
+        }
         line_rust_core::stickers::apply_pack_icons(&mut result, |package| {
             let path = line_rust_core::sticker_cache::pack_icon(
                 &self.data.join("cache/stickers"),
@@ -598,6 +624,30 @@ impl Ipc {
         match method {
             "expression_library" => self.expression_library(&p),
             "download_expression" => self.download_expression(&p, generation),
+            "expression_prepare" => {
+                p["prepare"] = json!(true);
+                self.download_expression(&p, generation)
+            }
+            "expression_item" => {
+                let package = p["packageId"].as_str().context("missing package")?;
+                let id = p["stickerId"].as_str().context("missing image ID")?;
+                if !line_rust_core::expressions::valid_id(package)
+                    || !line_rust_core::expressions::valid_id(id)
+                {
+                    bail!("invalid expression ID");
+                }
+                let path = if p["kind"] == "emoji" {
+                    let dest = self
+                        .data
+                        .join("cache/stickers/emoji")
+                        .join(package)
+                        .join(format!("{id}.png"));
+                    self.asset(&format!("https://stickershop.line-scdn.net/sticonshop/v1/sticon/{package}/android/{id}.png"), &dest, generation)?
+                } else {
+                    self.sticker(id, false, generation)?
+                };
+                Ok(json!({"imagePath":path}))
+            }
             "expression_icon" => {
                 use line_rust_core::sticker_cache::{self, Fetch};
                 let package = p["packageId"].as_str().context("missing package ID")?;

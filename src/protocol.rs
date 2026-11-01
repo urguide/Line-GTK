@@ -132,6 +132,7 @@ pub enum ProtocolEvent {
         pin: String,
     },
     Listening,
+    ExpressionState(Value),
     Message(Box<MessageInfo>),
     MessageUnsent {
         chat_mid: String,

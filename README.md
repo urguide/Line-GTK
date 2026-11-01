@@ -80,6 +80,17 @@ button opens the account's full purchased/owned library (paginated, without the
 old 12-pack/48-image limits). Select packs or use **Download all**; completed packs
 are skipped, failed packs remain retryable, and **Stop queue** finishes the current
 pack before stopping. Opening the chooser downloads no entire packs.
+Downloads are a persistent, account-local background queue owned by the Rust
+worker, independent of the manager window. Closing the manager keeps downloads
+running; quitting pauses work and the next login resumes the saved item checkpoint.
+Packs download sequentially, yielding to chat requests between images. Failures
+remain retryable and do not block later packs; only complete packs enter the picker.
+Login asynchronously loads installed catalogs from disk without contacting the
+shop, warming covers and the first/recent page. Opening the picker paints the
+in-memory catalog immediately; purchase refresh stays in the manager. Static
+96px thumbnails use a 256-entry LRU cache (at most about 9 MiB of pixel data),
+with remaining pack thumbnails decoded on selection. Completed downloads update
+the live catalog immediately. Animations are not predecoded at startup.
 The download manager shows each pack's cover next to its name, including packs
 not yet downloaded. Covers load progressively and are cached separately from
 full packs; an unavailable cover leaves the name and download controls usable.

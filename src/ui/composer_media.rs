@@ -13,45 +13,18 @@ pub(super) fn open_expression_picker(state: &AppState, kind: &str) {
         toast(state, &crate::i18n::t("still_restoring"));
         return;
     }
-    // Show a loading placeholder while the sidecar lists / caches thumbs.
-    let loading = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(10)
-        .margin_top(24)
-        .margin_bottom(24)
-        .margin_start(28)
-        .margin_end(28)
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::Center)
-        .build();
-    let spin = gtk::Spinner::builder().spinning(true).build();
-    spin.set_size_request(28, 28);
-    let label = gtk::Label::builder()
-        .label(crate::i18n::t("loading_stickers"))
-        .css_classes(["dim-label"])
-        .build();
-    loading.append(&spin);
-    loading.append(&label);
-    state.sticker_popover.set_child(Some(&loading));
+    *state.expression_picker_kind.borrow_mut() = kind.into();
+    let cached = state.expression_catalogs.borrow().get(kind).cloned();
+    fill_sticker_popover(
+        state,
+        &cached
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({"packs":[]})),
+        kind,
+    );
     state.sticker_popover.popup();
-
-    match state
-        .sidecar
-        .request("expression_library", Some(serde_json::json!({"kind":kind})))
-    {
-        Ok(id) => {
-            state
-                .pending
-                .borrow_mut()
-                .insert(id, Pending::ListStickers { kind: kind.into() });
-        }
-        Err(e) => {
-            state.sticker_popover.popdown();
-            toast(
-                state,
-                &crate::i18n::tf("sticker_send_failed", &[("error", &e.to_string())]),
-            );
-        }
+    if cached.is_none() {
+        super::expressions::request_local(state, kind);
     }
 }
 
@@ -158,7 +131,7 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value,
         .build();
     tab_scroll.set_child(Some(&tabs));
 
-    let tab_buttons: Rc<RefCell<Vec<gtk::ToggleButton>>> = Rc::new(RefCell::new(Vec::new()));
+    let mut first_tab: Option<gtk::ToggleButton> = None;
 
     for (idx, pack) in packs.iter().enumerate() {
         let pack_id = pack
@@ -246,7 +219,7 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value,
             if idx == 0
                 && let Some(path) = path.clone()
             {
-                attach_texture_async(pic.clone(), path, 96);
+                super::expressions::attach_thumb(state, pic.clone(), path);
             }
             btn.set_child(Some(&pic));
 
@@ -291,6 +264,11 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value,
             .css_classes(["flat", "circular", "line-sticker-tab"])
             .tooltip_text(&display_name)
             .build();
+        if let Some(first) = &first_tab {
+            tab.set_group(Some(first));
+        } else {
+            first_tab = Some(tab.clone());
+        }
         if is_recent {
             tab.set_icon_name("document-open-recent-symbolic");
         } else {
@@ -303,7 +281,7 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value,
             if let Some(path) = pack.get("iconPath").and_then(|v| v.as_str())
                 && !path.is_empty()
             {
-                attach_texture_async(pic.clone(), path.to_string(), 48);
+                super::expressions::attach_thumb(state, pic.clone(), path.to_string());
             }
             tab.set_child(Some(&pic));
         }
@@ -315,19 +293,14 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value,
 
         let pages_c = pages.clone();
         let title_c = title.clone();
-        let tabs_c = tab_buttons.clone();
         let page_name_c = page_name.clone();
         let display_name_c = display_name.clone();
         let pending_c = pending_thumbs.clone();
         let loaded_c = pack_loaded.clone();
+        let s = state.clone();
         tab.connect_toggled(move |btn| {
             if !btn.is_active() {
                 return;
-            }
-            for other in tabs_c.borrow().iter() {
-                if other != btn && other.is_active() {
-                    other.set_active(false);
-                }
             }
             title_c.set_text(&display_name_c);
             pages_c.set_visible_child_name(&page_name_c);
@@ -335,12 +308,11 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value,
             if !*loaded_c.borrow() {
                 *loaded_c.borrow_mut() = true;
                 for (pic, path) in pending_c.borrow_mut().drain(..) {
-                    attach_texture_async(pic, path, 96);
+                    super::expressions::attach_thumb(&s, pic, path);
                 }
             }
         });
 
-        tab_buttons.borrow_mut().push(tab.clone());
         tabs.append(&tab);
     }
 
