@@ -370,6 +370,14 @@ the previous page request; queued media and history repair resume at lower
 priority. An already-running media transfer may finish in the background without
 blocking the new conversation's messages.
 
+Incoming-message conversations have second priority, after the selected chat and
+before ordinary background hydration. They are processed FIFO by conversation;
+additional messages join the existing job without moving it behind newer chats.
+Each active conversation reuses one worker for page reads and media downloads.
+Duplicate page requests share their result, warm pages merge live events without
+refetching, and already hydrated media is skipped. Muted and hidden chats are
+excluded from incoming-message prefetch priority.
+
 ## Reply to messages
 
 Press **Enter** to send a message, or **Shift+Enter** to insert a new line.

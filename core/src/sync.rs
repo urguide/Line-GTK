@@ -41,6 +41,15 @@ pub trait Transport: Send + Sync + 'static {
 }
 
 pub enum Command {
+    PrioritizeChat {
+        chat: String,
+        generation: u64,
+    },
+    Prefetch {
+        id: u64,
+        chat: String,
+        generation: u64,
+    },
     FocusChat {
         chat: String,
         generation: u64,
@@ -248,6 +257,13 @@ impl<T: Transport> Engine<T> {
 
     fn queue_media(&mut self, chat: &str, rows: &[Value], generation: u64) {
         for row in rows.iter().rev() {
+            if self
+                .scheduler
+                .hydrated
+                .contains(&(chat.to_owned(), id(row).to_owned()))
+            {
+                continue;
+            }
             if self.transport.memory_media(&self.account, chat)
                 && matches!(row["contentType"].as_str(), Some("IMAGE" | "VIDEO"))
             {
@@ -373,6 +389,24 @@ impl<T: Transport> Engine<T> {
 
     fn command(&mut self, command: Command) -> Result<bool> {
         match command {
+            Command::PrioritizeChat { chat, generation } => {
+                self.valid(generation)?;
+                self.scheduler.prioritize(&chat);
+            }
+            Command::Prefetch {
+                id,
+                chat,
+                generation,
+            } => {
+                self.valid(generation)?;
+                self.scheduler.prioritize(&chat);
+                return self.command(Command::Fetch {
+                    id,
+                    chat,
+                    before: None,
+                    generation,
+                });
+            }
             Command::FocusChat { chat, generation } => {
                 self.valid(generation)?;
                 self.scheduler.focus(chat);
@@ -875,7 +909,7 @@ impl<T: Transport> Engine<T> {
                 generation,
             } => {
                 if self.scheduler.enabled {
-                    self.scheduler.pages.push_back(scheduler::PageJob {
+                    self.scheduler.enqueue_page(scheduler::PageJob {
                         id,
                         chat,
                         before,

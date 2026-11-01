@@ -154,7 +154,11 @@ pub(super) fn request(state: &AppState, mid: &str) -> Result<()> {
     {
         return Ok(());
     }
-    let id = state.sidecar.fetch_messages(mid, 20)?;
+    let id = if state.current_chat.borrow().as_deref() == Some(mid) {
+        state.sidecar.fetch_messages(mid, 20)?
+    } else {
+        state.sidecar.prefetch_messages(mid)?
+    };
     state.pending.borrow_mut().insert(
         id,
         Pending::LatestMessages {
@@ -169,6 +173,25 @@ pub(super) fn request(state: &AppState, mid: &str) -> Result<()> {
 pub(super) fn prefetch(state: &AppState, mid: &str) {
     if !eligible(state, mid) {
         state.message_cache.borrow_mut().remove(mid);
+        return;
+    }
+    let _ = state.sidecar.prioritize_chat(mid);
+    // Warm pages already received this live message; only media needs work.
+    if state
+        .message_cache
+        .borrow_mut()
+        .get(mid)
+        .is_some_and(|page| page.fresh())
+    {
+        return;
+    }
+    if state
+        .pending
+        .borrow()
+        .values()
+        .any(|p| matches!(p, Pending::LatestMessages { chat_mid, .. } if chat_mid == mid))
+    {
+        // Live events are merged into the in-flight result; do not fetch it again.
         return;
     }
     {
@@ -211,24 +234,14 @@ fn schedule(state: &AppState) {
 }
 
 fn pump(state: &AppState) {
-    // Keep background work bounded so foreground requests can reach the worker quickly.
-    if state
-        .pending
-        .borrow()
-        .values()
-        .any(|p| matches!(p, Pending::LatestMessages { .. }))
-    {
-        return;
-    }
+    // Submit FIFO chat jobs; the core owns concurrency and per-chat deduplication.
     loop {
         let mid = state.message_cache.borrow_mut().queued.pop_front();
         let Some(mid) = mid else { return };
-        if eligible(state, &mid) {
-            if let Err(error) = request(state, &mid) {
-                tracing::debug!(%error, "message prefetch could not start");
-                continue;
-            }
-            return;
+        if eligible(state, &mid)
+            && let Err(error) = request(state, &mid)
+        {
+            tracing::debug!(%error, "message prefetch could not start");
         }
     }
 }

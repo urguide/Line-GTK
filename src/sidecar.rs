@@ -422,6 +422,28 @@ impl Sidecar {
         Ok(())
     }
 
+    pub fn prefetch_messages(&self, chat: &str) -> Result<u64> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.core
+            .commands
+            .send(line_rust_core::sync::Command::Prefetch {
+                id,
+                chat: chat.into(),
+                generation: self.generation.load(Ordering::SeqCst),
+            })?;
+        Ok(id)
+    }
+
+    pub fn prioritize_chat(&self, chat: &str) -> Result<()> {
+        self.core
+            .commands
+            .send(line_rust_core::sync::Command::PrioritizeChat {
+                chat: chat.into(),
+                generation: self.generation.load(Ordering::SeqCst),
+            })?;
+        Ok(())
+    }
+
     pub fn fetch_older_messages(&self, chat_mid: &str, before: Value) -> Result<u64> {
         self.request(
             "fetch_messages",

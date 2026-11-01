@@ -14,6 +14,119 @@ use std::{
     time::Duration,
 };
 
+#[test]
+fn incoming_chats_are_fifo_deduplicated_and_share_one_worker_per_chat() {
+    struct Ordered {
+        events: mpsc::Sender<Value>,
+        jobs: mpsc::Sender<(String, std::thread::ThreadId)>,
+    }
+    impl Transport for Ordered {
+        fn call(&self, _: &str, params: Value, _: u64) -> Result<Value> {
+            let chat = params["chatMid"].as_str().unwrap();
+            self.jobs
+                .send((format!("page:{chat}"), std::thread::current().id()))?;
+            let id = match chat {
+                "b" => "2",
+                "c" => "3",
+                _ => "4",
+            };
+            Ok(
+                json!({"messages":[{"id":id,"createdTime":1,"contentType":if chat == "foreground" {"NONE"} else {"IMAGE"}}],"hasMore":false,"nextCursor":null}),
+            )
+        }
+        fn materialize(&self, row: &Value, _: u64) -> Result<Value> {
+            self.jobs.send((
+                format!("media:{}", row["chatMid"].as_str().unwrap()),
+                std::thread::current().id(),
+            ))?;
+            Ok(row.clone())
+        }
+        fn emit(&self, value: Value) {
+            let _ = self.events.send(value);
+        }
+    }
+    let (events, rx) = mpsc::channel();
+    let (jobs, work) = mpsc::channel();
+    let engine = Engine::new(
+        Store::open(Path::new(":memory:")).unwrap(),
+        Ordered { events, jobs },
+        Arc::new(AtomicU64::new(1)),
+        "/nonexistent".into(),
+    );
+    let (tx, commands) = mpsc::channel();
+    tx.send(Command::Session {
+        account: "self".into(),
+        generation: 1,
+    })
+    .unwrap();
+    tx.send(Command::FocusChat {
+        chat: "foreground".into(),
+        generation: 1,
+    })
+    .unwrap();
+    tx.send(Command::Live {
+        chat: "old".into(),
+        message: json!({"id":"1","contentType":"IMAGE"}),
+        generation: 1,
+    })
+    .unwrap();
+    for (id, chat) in [(1, "b"), (2, "c"), (3, "b"), (4, "b")] {
+        tx.send(Command::Prefetch {
+            id,
+            chat: chat.into(),
+            generation: 1,
+        })
+        .unwrap();
+    }
+    tx.send(Command::Fetch {
+        id: 5,
+        chat: "foreground".into(),
+        before: None,
+        generation: 1,
+    })
+    .unwrap();
+    let worker = std::thread::spawn(move || engine.run(commands));
+    let mut results = std::collections::HashSet::new();
+    while results.len() < 5 {
+        let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        if let Some(id) = event["id"].as_u64() {
+            assert_eq!(event["ok"], true);
+            results.insert(id);
+        }
+    }
+    let jobs: Vec<_> = (0..6)
+        .map(|_| work.recv_timeout(Duration::from_secs(2)).unwrap())
+        .collect();
+    assert_eq!(
+        jobs.iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "page:foreground",
+            "page:b",
+            "media:b",
+            "page:c",
+            "media:c",
+            "media:old"
+        ]
+    );
+    assert_eq!(jobs[1].1, jobs[2].1, "page and media use the same b worker");
+    assert_eq!(jobs[3].1, jobs[4].1, "page and media use the same c worker");
+    tx.send(Command::Prefetch {
+        id: 6,
+        chat: "b".into(),
+        generation: 1,
+    })
+    .unwrap();
+    wait(&rx, 6);
+    assert!(
+        work.recv_timeout(Duration::from_millis(100)).is_err(),
+        "cached page and hydrated media are not processed again"
+    );
+    tx.send(Command::Stop).unwrap();
+    worker.join().unwrap();
+}
+
 struct Host {
     events: mpsc::Sender<Value>,
     started: mpsc::Sender<String>,

@@ -44,6 +44,11 @@ pub(super) struct Scheduler {
     pub downloads: VecDeque<(u64, String, Value, u64)>,
     pub operations: VecDeque<(u64, String, Value, u64)>,
     pub reads: VecDeque<(u64, Value, u64)>,
+    pub hydrated: HashSet<(String, String)>,
+    incoming: VecDeque<String>,
+    workers: HashMap<String, mpsc::Sender<Box<dyn FnOnce() + Send>>>,
+    waiters: HashMap<u64, Vec<u64>>,
+    page_ids: HashMap<(String, Option<String>), u64>,
     read_running: bool,
     operations_running: usize,
     pages_running: HashMap<(String, u64), Arc<std::sync::atomic::AtomicBool>>,
@@ -63,6 +68,11 @@ impl Default for Scheduler {
             downloads: VecDeque::new(),
             operations: VecDeque::new(),
             reads: VecDeque::new(),
+            hydrated: HashSet::new(),
+            incoming: VecDeque::new(),
+            workers: HashMap::new(),
+            waiters: HashMap::new(),
+            page_ids: HashMap::new(),
             read_running: false,
             operations_running: 0,
             pages_running: HashMap::new(),
@@ -75,6 +85,74 @@ impl Default for Scheduler {
 }
 
 impl Scheduler {
+    pub fn prioritize(&mut self, chat: &str) {
+        if !self.incoming.iter().any(|mid| mid == chat) {
+            self.incoming.push_back(chat.into());
+        }
+    }
+
+    pub fn enqueue_page(&mut self, job: PageJob) {
+        let key = (
+            job.chat.clone(),
+            job.before.as_ref().map(|c| c.message_id.clone()),
+        );
+        if let Some(id) = self.page_ids.get(&key) {
+            if job.id != *id {
+                self.waiters.entry(*id).or_default().push(job.id);
+            }
+            return;
+        }
+        self.page_ids.insert(key, job.id);
+        self.pages.push_back(job);
+    }
+
+    fn complete_page(&mut self, job: &PageJob) -> Vec<u64> {
+        self.page_ids.remove(&(
+            job.chat.clone(),
+            job.before.as_ref().map(|c| c.message_id.clone()),
+        ));
+        self.waiters.remove(&job.id).unwrap_or_default()
+    }
+
+    fn dispatch(&mut self, chat: &str, task: impl FnOnce() + Send + 'static) {
+        // One persistent worker per active conversation; page and media jobs
+        // share it. Idle workers are evicted rather than accumulating forever.
+        if !self.workers.contains_key(chat) {
+            if self.workers.len() >= 32 {
+                let idle = self
+                    .workers
+                    .keys()
+                    .find(|mid| {
+                        !self.pages_running.keys().any(|(c, _)| c == *mid)
+                            && !self.media_running.iter().any(|(c, _, _)| c == *mid)
+                    })
+                    .cloned();
+                if let Some(idle) = idle {
+                    self.workers.remove(&idle);
+                }
+            }
+            let (tx, rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
+            thread::spawn(move || {
+                while let Ok(task) = rx.recv() {
+                    task();
+                }
+            });
+            self.workers.insert(chat.into(), tx);
+        }
+        let _ = self.workers[chat].send(Box::new(task));
+    }
+
+    fn priority(&self, chat: &str) -> usize {
+        if chat == self.focus {
+            0
+        } else if self.incoming.front().is_some_and(|mid| mid == chat) {
+            1
+        } else if self.incoming.iter().any(|mid| mid == chat) {
+            2
+        } else {
+            3
+        }
+    }
     pub fn focus(&mut self, chat: String) {
         for ((mid, _), cancel) in &self.pages_running {
             if mid != &chat {
@@ -101,6 +179,19 @@ impl Scheduler {
 }
 
 impl<T: Transport> Engine<T> {
+    fn finish_page_response(&mut self, job: &PageJob, result: Result<Value>) {
+        for id in self.scheduler.complete_page(job) {
+            self.response(
+                id,
+                result
+                    .as_ref()
+                    .cloned()
+                    .map_err(|e| anyhow::anyhow!(e.to_string())),
+                job.generation,
+            );
+        }
+        self.response(job.id, result, job.generation);
+    }
     pub(super) fn start_mark_read(&mut self, id: u64, params: Value, generation: u64) {
         self.scheduler.read_running = true;
         let transport = self.transport.clone();
@@ -230,7 +321,7 @@ impl<T: Transport> Engine<T> {
                         }
                         self.page_ready(&job, page)
                     })();
-                    self.response(job.id, result, job.generation);
+                    self.finish_page_response(&job, result);
                 }
                 Completion::Media {
                     id: request_id,
@@ -272,6 +363,11 @@ impl<T: Transport> Engine<T> {
                                 .save_messages(&chat, std::slice::from_ref(&updated))?;
                         }
                         self.transport.emit(json!({"event":"media_ready","chatMid":chat,"messageId":message,"imagePath":updated["imagePath"],"audioPath":updated["audioPath"],"filePath":updated["filePath"]}));
+                        if !memory && !memory_now {
+                            self.scheduler
+                                .hydrated
+                                .insert((chat.clone(), message.clone()));
+                        }
                         Ok(
                             json!({"path":updated["filePath"],"fileName":updated["fileName"],"contentType":updated["contentType"]}),
                         )
@@ -329,6 +425,23 @@ impl<T: Transport> Engine<T> {
     }
 
     pub(super) fn start_async(&mut self) -> bool {
+        while let Some(mid) = self.scheduler.incoming.front() {
+            let busy = self.scheduler.pages.iter().any(|j| &j.chat == mid)
+                || self.scheduler.pages_running.keys().any(|(c, _)| c == mid)
+                || self
+                    .scheduler
+                    .media_running
+                    .iter()
+                    .any(|(c, _, _)| c == mid)
+                || self
+                    .background
+                    .iter()
+                    .any(|w| matches!(w, Work::Media { chat, .. } if chat == mid));
+            if busy {
+                break;
+            }
+            self.scheduler.incoming.pop_front();
+        }
         // Reserve a page lane for the selected chat. A slow previous chat never
         // occupies both slots; queued work is selected using the latest focus.
         let focus = &self.scheduler.focus;
@@ -336,12 +449,25 @@ impl<T: Transport> Engine<T> {
             .scheduler
             .pages
             .iter()
-            .position(|j| &j.chat == focus)
-            .or_else(|| (!self.scheduler.pages.is_empty()).then_some(0));
+            .enumerate()
+            .filter(|(_, j)| self.scheduler.priority(&j.chat) != 2)
+            .min_by_key(|(_, j)| self.scheduler.priority(&j.chat))
+            .map(|(i, _)| i);
         if let Some(index) = candidate {
             let job = &self.scheduler.pages[index];
             let capacity = if job.chat == *focus { 2 } else { 1 };
             if self.scheduler.pages_running.len() < capacity
+                && !self
+                    .scheduler
+                    .media_running
+                    .iter()
+                    .any(|(chat, _, _)| chat == &job.chat)
+                && (self.scheduler.priority(&job.chat) == 0
+                    || self
+                        .scheduler
+                        .incoming
+                        .front()
+                        .is_none_or(|mid| mid == &job.chat))
                 && !self
                     .scheduler
                     .pages_running
@@ -362,9 +488,9 @@ impl<T: Transport> Engine<T> {
                 match cached {
                     Ok(Some(page)) => {
                         let result = self.page_ready(&job, page);
-                        self.response(job.id, result, job.generation);
+                        self.finish_page_response(&job, result);
                     }
-                    Err(error) => self.response(job.id, Err(error), job.generation),
+                    Err(error) => self.finish_page_response(&job, Err(error)),
                     Ok(None) => {
                         let tx = self.scheduler.tx.clone();
                         let transport = self.transport.clone();
@@ -372,7 +498,7 @@ impl<T: Transport> Engine<T> {
                         self.scheduler
                             .pages_running
                             .insert((job.chat.clone(), job.generation), cancel.clone());
-                        thread::spawn(move || {
+                        self.scheduler.dispatch(&job.chat.clone(), move || {
                             let result = transport.call_cancellable(
                                 "bridge_fetch_page",
                                 json!({"chatMid":job.chat,"before":job.before}),
@@ -421,6 +547,16 @@ impl<T: Transport> Engine<T> {
             let (_, chat, row, generation) = &self.scheduler.downloads[index];
             let capacity = if chat == focus { 2 } else { 1 };
             if self.scheduler.media_running.len() < capacity
+                && !self
+                    .scheduler
+                    .pages_running
+                    .keys()
+                    .any(|(mid, _)| mid == chat)
+                && !self
+                    .scheduler
+                    .media_running
+                    .iter()
+                    .any(|(mid, _, _)| mid == chat)
                 && !self.scheduler.media_running.contains(&(
                     chat.clone(),
                     id(row).into(),
@@ -445,23 +581,43 @@ impl<T: Transport> Engine<T> {
         let media = self
             .background
             .iter()
-            .position(|w| matches!(w, Work::Media { chat, .. } if chat == focus))
-            .or_else(|| {
-                if self.scheduler.media_running.is_empty() {
-                    self.background
+            .enumerate()
+            .filter_map(|(i, w)| {
+                if let Work::Media { chat, .. } = w {
+                    let priority = self.scheduler.priority(chat);
+                    let busy = self
+                        .scheduler
+                        .media_running
                         .iter()
-                        .position(|w| matches!(w, Work::Media { .. }))
+                        .any(|(mid, _, _)| mid == chat)
+                        || self
+                            .scheduler
+                            .pages_running
+                            .keys()
+                            .any(|(mid, _)| mid == chat);
+                    let background_busy = self
+                        .scheduler
+                        .media_running
+                        .iter()
+                        .any(|(mid, _, _)| mid != focus)
+                        || self
+                            .scheduler
+                            .pages_running
+                            .keys()
+                            .any(|(mid, _)| mid != focus);
+                    (!busy
+                        && priority != 2
+                        && (priority == 0 || !background_busy)
+                        && (priority < 3 || self.scheduler.incoming.is_empty()))
+                    .then_some((i, priority))
                 } else {
                     None
                 }
-            });
+            })
+            .min_by_key(|(_, priority)| *priority)
+            .map(|(i, _)| i);
         if let Some(index) = media
             && self.scheduler.media_running.len() < 2
-            && !self
-                .scheduler
-                .media_running
-                .iter()
-                .any(|(chat, _, _)| chat == focus)
         {
             let Work::Media {
                 chat,
@@ -572,7 +728,7 @@ impl<T: Transport> Engine<T> {
             .insert((chat.clone(), message.clone(), generation));
         let tx = self.scheduler.tx.clone();
         let transport = self.transport.clone();
-        thread::spawn(move || {
+        self.scheduler.dispatch(&chat.clone(), move || {
             let result = transport.materialize(&current, generation);
             let _ = tx.send(Completion::Media {
                 id: request_id,
