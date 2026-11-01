@@ -355,6 +355,14 @@ Environment variables now use `LINE_RUST_`. The old `LINE_GTK_ROOT` and
 Discord's default application ID is still the upstream public ID; a separate
 Discord application must be configured in Settings to change its registered branding.
 
+## Fast conversation switching
+
+Recently opened conversations keep their latest message page in memory (up to 32
+chats). Switching back displays it immediately; pages older than a minute refresh
+in the background. Incoming messages update warm pages and queue a debounced
+latest-page prefetch, excluding muted and hidden chats. Prefetching does not mark
+messages as read. The cache is cleared on logout, account changes, and reconnect.
+
 ## Reply to messages
 
 Press **Enter** to send a message, or **Shift+Enter** to insert a new line.

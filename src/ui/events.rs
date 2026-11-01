@@ -53,6 +53,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             on_logged_in(state, &result);
         }
         ProtocolEvent::SessionFailed { error } => {
+            *state.message_cache.borrow_mut() = Default::default();
             mentions::reset(state);
             notes::close(state);
             super::expressions::close(state);
@@ -195,6 +196,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
             promote_chat_to_top(state, &peer);
 
+            message_cache::live(state, &peer, &msg);
+            message_cache::prefetch(state, &peer);
+
             let current = state.current_chat.borrow().clone();
             let viewing = current.as_deref() == Some(peer.as_str());
             let window_focused = state.window.is_active();
@@ -313,6 +317,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             apply_message_unsent(state, &chat_mid, &message_id);
         }
         ProtocolEvent::ChatMute { mid, muted } => {
+            if muted {
+                state.message_cache.borrow_mut().remove(&mid);
+            }
             if let Some(chat) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == mid) {
                 chat.muted = muted;
             }
@@ -367,6 +374,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             if state.unsent_msg_ids.borrow().contains(&message_id) {
                 return;
             }
+            state.message_cache.borrow_mut().media_ready(
+                &chat_mid,
+                &message_id,
+                &image_path,
+                audio_path.as_deref(),
+                file_path.as_deref(),
+            );
             if !image_path.is_empty() && std::path::Path::new(&image_path).exists() {
                 state
                     .media_ready_paths
@@ -470,7 +484,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     }
                     match prog.as_str() {
                         "loading" => {
-                            if state.message_list.first_child().is_none() {
+                            if state.message_list.first_child().is_none()
+                                && state
+                                    .message_cache
+                                    .borrow_mut()
+                                    .get(current.as_deref().unwrap_or_default())
+                                    .is_none()
+                            {
                                 set_msg_state(state, "loading", None);
                             } else {
                                 state.chat_subtitle.set_text(&crate::i18n::t("refreshing"));
@@ -490,7 +510,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         }
                         "error" => {
                             let msg = error.unwrap_or_else(|| "Failed to load messages".into());
-                            set_msg_state(state, "empty", Some(&msg));
+                            if state.message_index.borrow().is_empty() {
+                                set_msg_state(state, "empty", Some(&msg));
+                            }
                             toast(state, &msg);
                         }
                         _ => {}
@@ -538,6 +560,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(pending @ Pending::LatestMessages { .. }) = pending.as_ref() {
+                message_cache::response(state, pending, ok, &result, error.as_deref());
+                return;
+            }
             if let Some(Pending::ReplyOriginal {
                 message_id,
                 generation,
@@ -672,7 +698,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
             match pending {
                 Some(
-                    Pending::ChatMembers { .. }
+                    Pending::LatestMessages { .. }
+                    | Pending::ChatMembers { .. }
                     | Pending::SenderProfile { .. }
                     | Pending::ReplyOriginal { .. },
                 ) => {
@@ -759,6 +786,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                             super::expressions::request_local(state, "sticker");
                         }
                         update_chat_preview(state, &chat_mid, &msg);
+                        message_cache::live(state, &chat_mid, &msg);
                         if state.current_chat.borrow().as_deref() != Some(chat_mid.as_str()) {
                             return;
                         }
@@ -839,6 +867,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
 const MAX_SIDECAR_RECOVERY_ATTEMPTS: u8 = 3;
 
 pub(super) fn schedule_sidecar_recovery(state: &AppState) {
+    *state.message_cache.borrow_mut() = Default::default();
     notes::close(state);
     super::expressions::close(state);
     *state.session_ready.borrow_mut() = false;
@@ -887,6 +916,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
             if state.self_mid.borrow().as_deref() != Some(profile.mid.as_str()) {
+                *state.message_cache.borrow_mut() = Default::default();
                 mentions::reset(state);
                 senders::reset(state);
                 state.read_counts.borrow_mut().clear();

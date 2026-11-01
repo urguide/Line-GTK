@@ -11,6 +11,7 @@ mod friends;
 mod login;
 mod media;
 mod mentions;
+mod message_cache;
 mod messages;
 mod notes;
 mod notifications;
@@ -188,6 +189,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         unsent_msg_ids: Rc::new(RefCell::new(HashSet::new())),
         message_rows: Rc::new(RefCell::new(HashMap::new())),
         message_generation: Rc::new(RefCell::new(0)),
+        message_cache: Rc::new(RefCell::new(Default::default())),
         history_generation: Rc::new(RefCell::new(0)),
         history_cursor: Rc::new(RefCell::new(None)),
         history_loading: Rc::new(RefCell::new(false)),
@@ -1458,6 +1460,7 @@ fn wire_actions(state: &AppState) {
                 let s2 = s.clone();
                 Rc::new(move || {
                     *s2.session_ready.borrow_mut() = false;
+                    *s2.message_cache.borrow_mut() = Default::default();
                     s2.pending.borrow_mut().clear();
                     *s2.current_chat.borrow_mut() = None;
                     *s2.discord_session_start.borrow_mut() = None;
@@ -1494,6 +1497,7 @@ fn wire_actions(state: &AppState) {
                     refresh_call_controls(&s2);
                     // Experimental call mode binds to session/device path: force re-login.
                     *s2.session_ready.borrow_mut() = false;
+                    *s2.message_cache.borrow_mut() = Default::default();
                     s2.pending.borrow_mut().clear();
                     *s2.current_chat.borrow_mut() = None;
                     clear_list(&s2.chat_list);
@@ -1726,7 +1730,6 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
         .set_sensitive(chat.mid.starts_with(['u', 'c', 'r']));
     update_mute_btn(state, chat_is_muted(state, &chat.mid));
     state.media_queue.borrow_mut().clear();
-    set_msg_state(state, "loading", None);
     clear_messages(state);
     *state.msg_list_fp.borrow_mut() = None;
     *state.history_generation.borrow_mut() += 1;
@@ -1734,31 +1737,32 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     *state.history_cursor.borrow_mut() = None;
     *state.history_loading.borrow_mut() = true;
     *state.history_has_more.borrow_mut() = false;
-    match state.sidecar.fetch_messages(&chat.mid, 20) {
-        Ok(id) => {
-            state.pending.borrow_mut().insert(
-                id,
-                Pending::FetchMessages {
-                    chat_mid: chat.mid.clone(),
-                    generation: *state.history_generation.borrow(),
-                    older: false,
-                },
-            );
-        }
-        Err(e) => {
+    let cached = state.message_cache.borrow_mut().get(&chat.mid);
+    let fresh = cached.as_ref().is_some_and(message_cache::Page::fresh);
+    if let Some(page) = cached {
+        *state.history_cursor.borrow_mut() = page.cursor;
+        *state.history_has_more.borrow_mut() = page.has_more;
+        *state.history_loading.borrow_mut() = false;
+        apply_messages(state, page.messages);
+    } else {
+        set_msg_state(state, "loading", None);
+    }
+    if !fresh && let Err(e) = message_cache::request(state, &chat.mid) {
+        if state.message_index.borrow().is_empty() {
             set_msg_state(state, "empty", Some(&format!("Failed: {e}")));
-            *state.history_loading.borrow_mut() = false;
-            toast(
-                state,
-                &crate::i18n::tf("fetch_failed", &[("error", &e.to_string())]),
-            );
         }
+        *state.history_loading.borrow_mut() = false;
+        toast(
+            state,
+            &crate::i18n::tf("fetch_failed", &[("error", &e.to_string())]),
+        );
     }
     let _ = state.sidecar.sync_receipts(&chat.mid);
     sync_discord_rpc(state);
 }
 
 fn restart_qr_login(state: &AppState) {
+    *state.message_cache.borrow_mut() = Default::default();
     mentions::reset(state);
     expressions::close(state);
     *state.restarting.borrow_mut() = true;

@@ -24,6 +24,7 @@ pub(super) fn chat_memory_media(state: &AppState, mid: &str) -> bool {
 }
 
 fn toggle_memory_media(state: &AppState, mid: &str) {
+    state.message_cache.borrow_mut().remove(mid);
     let Some(account) = state.self_mid.borrow().clone() else {
         return;
     };
@@ -82,6 +83,7 @@ pub(super) fn refresh_chat_visibility(state: &AppState) {
 }
 
 fn hide_chat(state: &AppState, mid: &str) {
+    state.message_cache.borrow_mut().remove(mid);
     let Some(account) = state.self_mid.borrow().clone() else {
         return;
     };

@@ -212,6 +212,19 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     }
 
     let chat_mid = state.current_chat.borrow().clone();
+    // A cached latest page should be painted in this turn, without an empty
+    // frame or waiting behind the event queue. Large history rebuilds stay batched.
+    if messages.len() <= 20 {
+        for message in &messages {
+            append_message(state, message, false);
+        }
+        pin_messages_to_latest(state);
+        if let Some(mid) = chat_mid.as_deref() {
+            mark_chat_read(state, mid);
+            clear_unread_badge(state, mid);
+        }
+        return;
+    }
     let state_c = state.clone();
     let batch = Rc::new(RefCell::new(messages));
     let generation = *state.message_generation.borrow();
@@ -735,6 +748,10 @@ fn append_message_menu(state: &AppState, footer: &gtk::Box, bubble: &gtk::Box, m
 }
 
 pub(super) fn apply_message_unsent(state: &AppState, chat_mid: &str, message_id: &str) {
+    state
+        .message_cache
+        .borrow_mut()
+        .unsend(chat_mid, message_id);
     state
         .unsent_msg_ids
         .borrow_mut()
@@ -1688,9 +1705,7 @@ pub(super) fn set_msg_state(state: &AppState, name: &str, empty_text: Option<&st
     if let Some(text) = empty_text {
         state.msg_empty.set_text(text);
     }
-    if name == "loading" {
-        state.msg_spinner.set_spinning(true);
-    }
+    state.msg_spinner.set_spinning(name == "loading");
     state.msg_stack.set_visible_child_name(name);
 }
 
