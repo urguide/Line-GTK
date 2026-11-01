@@ -1722,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "line-rust"
-version = "0.1.2"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "async-channel",
