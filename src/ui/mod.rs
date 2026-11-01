@@ -15,6 +15,7 @@ mod message_cache;
 mod messages;
 mod notes;
 mod notifications;
+mod profiles;
 mod replies;
 mod senders;
 mod settings;
@@ -159,7 +160,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         status: shell.status,
         login,
         profile_label: shell.profile_label,
-        profile_avatar: shell.profile_avatar,
+        profile_btn: shell.profile_btn,
+        profile_ui: Rc::new(RefCell::new(None)),
         brand_label: shell.brand_label,
         brand_icon: shell.brand_icon,
         chat_title: shell.chat_title,
@@ -503,7 +505,6 @@ fn apply_self_profile(
         *state.self_display_name.borrow_mut() = display_name.to_string();
         state.profile_label.set_text(display_name);
         state.profile_label.set_tooltip_text(Some(display_name));
-        state.profile_avatar.set_tooltip_text(Some(display_name));
     }
     if let Some(url) = picture_url.filter(|s| !s.is_empty()) {
         let full = if url.starts_with("http") {
@@ -517,10 +518,8 @@ fn apply_self_profile(
         };
         *state.self_picture_url.borrow_mut() = Some(full);
     }
-    state.profile_avatar.set_visible(true);
     if let Some(path) = avatar_path.filter(|p| !p.is_empty() && std::path::Path::new(p).exists()) {
         *state.self_avatar_path.borrow_mut() = Some(path.to_string());
-        attach_texture_async(state.profile_avatar.clone(), path.to_string(), 64);
     }
     sync_discord_rpc(state);
 }
@@ -1444,6 +1443,10 @@ fn wire_actions(state: &AppState) {
             }
         }
         let deps = settings::SettingsDeps {
+            on_profile: {
+                let s2 = s.clone();
+                Rc::new(move || profiles::open_self(&s2))
+            },
             sidecar: s.sidecar.clone(),
             data_dir: s.data_dir.clone(),
             config: s.config.clone(),
@@ -1459,6 +1462,7 @@ fn wire_actions(state: &AppState) {
             on_logout: {
                 let s2 = s.clone();
                 Rc::new(move || {
+                    profiles::close(&s2);
                     *s2.session_ready.borrow_mut() = false;
                     *s2.message_cache.borrow_mut() = Default::default();
                     s2.pending.borrow_mut().clear();
@@ -1541,6 +1545,11 @@ fn wire_actions(state: &AppState) {
         };
         settings::open_settings(&s.window, deps);
     });
+
+    let s = state.clone();
+    state
+        .profile_btn
+        .connect_clicked(move |_| profiles::open_self(&s));
 
     let s = state.clone();
     state.friends_btn.connect_clicked(move |_| {

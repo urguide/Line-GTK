@@ -706,6 +706,7 @@ pub(super) fn build_chat_row(
         .label(&preview_text)
         .xalign(0.0)
         .hexpand(true)
+        .single_line_mode(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .css_classes(["line-chat-preview"])
         .build();

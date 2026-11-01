@@ -22,7 +22,7 @@ pub struct ShellWidgets {
     pub send_btn: gtk::Button,
     pub status: gtk::Label,
     pub profile_label: gtk::Label,
-    pub profile_avatar: gtk::Picture,
+    pub profile_btn: gtk::Button,
     pub brand_label: gtk::Label,
     pub brand_icon: gtk::Image,
     pub chat_title: gtk::Label,
@@ -87,29 +87,13 @@ pub fn build_shell_page() -> ShellWidgets {
     brand.append(&brand_label);
     header.pack_start(&brand);
 
-    let profile_avatar = gtk::Picture::builder()
-        .content_fit(gtk::ContentFit::Cover)
-        .can_shrink(true)
-        .width_request(26)
-        .height_request(26)
-        .visible(false)
-        .css_classes(["line-title-avatar"])
-        .build();
     let profile_label = gtk::Label::builder()
         .label("line-rust")
         .css_classes(["heading", "line-title-name"])
         .ellipsize(gtk::pango::EllipsizeMode::End)
+        .max_width_chars(24)
         .build();
-    let profile_title = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
-        .valign(gtk::Align::Center)
-        .halign(gtk::Align::Center)
-        .css_classes(["line-title-profile"])
-        .build();
-    profile_title.append(&profile_avatar);
-    profile_title.append(&profile_label);
-    header.set_title_widget(Some(&profile_title));
+    header.set_title_widget(Some(&profile_label));
 
     let status = gtk::Label::builder()
         .label("…")
@@ -130,6 +114,12 @@ pub fn build_shell_page() -> ShellWidgets {
         .build();
     header.pack_end(&settings_btn);
     header.pack_end(&friends_btn);
+    let profile_btn = gtk::Button::builder()
+        .icon_name("avatar-default-symbolic")
+        .tooltip_text(crate::i18n::t("my_profile"))
+        .css_classes(["flat"])
+        .build();
+    header.pack_end(&profile_btn);
 
     let body = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
@@ -592,7 +582,7 @@ pub fn build_shell_page() -> ShellWidgets {
         send_btn,
         status,
         profile_label,
-        profile_avatar,
+        profile_btn,
         brand_label,
         brand_icon,
         chat_title,
@@ -717,15 +707,19 @@ pub fn load_css() {
         }
 
         /* Avatar tiers: list/chat 48 default; friends override to 40; compact 36. */
-        .line-title-profile {
-            padding: 0 4px;
-        }
-        .line-title-avatar {
+        .line-profile-avatar {
             border-radius: 999px;
-            overflow: hidden;
-            min-width: 26px;
-            min-height: 26px;
             background: alpha(@borders, 0.35);
+        }
+        .line-profile-cover {
+            background: linear-gradient(135deg, alpha(@accent_bg_color, 0.35), alpha(@accent_bg_color, 0.08));
+        }
+        .line-msg-avatar-button {
+            padding: 0;
+            border: none;
+            min-width: 36px;
+            min-height: 36px;
+            border-radius: 999px;
         }
         .line-title-name {
             font-weight: 600;

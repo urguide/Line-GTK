@@ -3,6 +3,7 @@ mod config;
 mod core_bridge;
 mod core_catalog;
 mod core_notes;
+mod core_profiles;
 mod desktop_notify;
 mod discord_rpc;
 mod i18n;

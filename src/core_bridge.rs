@@ -1008,6 +1008,110 @@ mod tests {
         assert_eq!(ipc.ids.load(Ordering::SeqCst), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn profile_upload_stages_jpeg_and_commits_cache_only_after_acknowledgement() {
+        for ok in [false, true] {
+            let root = std::env::temp_dir()
+                .join(format!("line-profile-upload-{}-{ok}", std::process::id()));
+            std::fs::create_dir_all(root.join("cache/avatars")).unwrap();
+            let source = root.join("source.png");
+            image::RgbImage::from_pixel(8, 8, image::Rgb([40, 80, 120]))
+                .save(&source)
+                .unwrap();
+            let old = root.join("cache/avatars/u1.jpg");
+            std::fs::write(&old, b"previous avatar").unwrap();
+            let mut child = Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let replies: Replies = Arc::default();
+            let waiting = replies.clone();
+            let dir = root.clone();
+            let responder = std::thread::spawn(move || {
+                let mut line = String::new();
+                BufReader::new(stdout).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let p = &request["params"];
+                let staged = dir
+                    .join("cache/transfer")
+                    .join(p["transferName"].as_str().unwrap());
+                let bytes = std::fs::read(staged).unwrap();
+                let id = request["id"].as_u64().unwrap();
+                waiting
+                    .lock()
+                    .unwrap()
+                    .remove(&id)
+                    .unwrap()
+                    .send(Response {
+                        id: Some(id),
+                        ok: Some(ok),
+                        result: Some(json!({"mid":"u1","updated":true})),
+                        error: if ok {
+                            None
+                        } else {
+                            Some("upload denied".into())
+                        },
+                        event: None,
+                        extra: Value::Null,
+                    })
+                    .unwrap();
+                assert_eq!(request["method"], "bridge_profile");
+                assert_eq!(p["action"], "avatar");
+                assert!(p.get("filePath").is_none());
+                assert_eq!(
+                    image::guess_format(&bytes).unwrap(),
+                    image::ImageFormat::Jpeg
+                );
+            });
+            let (events, rx) = async_channel::unbounded();
+            let ipc = Ipc {
+                stdin: Arc::new(Mutex::new(child.stdin.take())),
+                replies,
+                ids: Arc::new(AtomicU64::new(1)),
+                generation: Arc::new(AtomicU64::new(1)),
+                events,
+                data: root.clone(),
+                asset_at: Mutex::new(None),
+            };
+            assert!(
+                ipc.profile_operation(
+                    json!({"mid":"u1","account":"other","action":"avatar","filePath":source}),
+                    1
+                )
+                .is_err()
+            );
+            let result = ipc.profile_operation(
+                json!({"mid":"u1","account":"u1","action":"avatar","filePath":source}),
+                1,
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+            responder.join().unwrap();
+            assert_eq!(result.is_ok(), ok);
+            assert_eq!(
+                std::fs::read_dir(root.join("cache/transfer"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+            if ok {
+                assert_eq!(
+                    image::guess_format(&std::fs::read(&old).unwrap()).unwrap(),
+                    image::ImageFormat::Jpeg
+                );
+                assert!(
+                    matches!(rx.try_recv().unwrap(), ProtocolEvent::AvatarReady {mid, ..} if mid == "u1")
+                );
+            } else {
+                assert_eq!(std::fs::read(&old).unwrap(), b"previous avatar");
+                assert!(rx.try_recv().is_err());
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
     #[test]
     fn recoverable_protocol_errors_keep_live_messages_but_auth_failure_stops_session_once() {
         let (commands, rx) = mpsc::channel();

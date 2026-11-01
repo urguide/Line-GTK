@@ -7,6 +7,7 @@ import { takeDecodeEnvelope } from "./live.ts";
 import { notesRpc } from "./notes.ts";
 import { downloadMedia } from "./media.ts";
 import { normalizeReadRanges } from "./receipts.ts";
+import { profileRpc } from "./profiles.ts";
 
 type Json = Record<string, unknown>;
 export function createApi(
@@ -62,6 +63,8 @@ export function createApi(
         return {};
       case "bridge_notes":
         return await notesRpc(c, String(p.action), p, transfer);
+      case "bridge_profile":
+        return await profileRpc(c, p, transfer);
       case "bridge_fetch_page": {
         const signal = fetches.get(String(p.fetchToken))?.signal;
         signal?.throwIfAborted();
@@ -454,7 +457,8 @@ export function createApi(
       "bridge_send_media",
       "bridge_send_media_e2ee_fallback",
       "bridge_notes",
-    ].includes(method);
+    ].includes(method) || (method === "bridge_profile" &&
+      ["add", "avatar", "background"].includes(String(p.action)));
     if (mutation && busy) throw new Error("bridge_busy");
     if (mutation) busy = true;
     const token = method === "bridge_fetch_page" && p.fetchToken != null

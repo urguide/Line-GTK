@@ -101,7 +101,17 @@ pub(super) fn append(
             .profiles
             .insert(msg.from.clone(), profile);
     }
-    let gutter = avatar_gutter(&avatar);
+    let avatar_button = gtk::Button::builder()
+        .child(&avatar)
+        .tooltip_text(crate::i18n::t("view_profile"))
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Start)
+        .css_classes(["flat", "line-msg-avatar-button"])
+        .build();
+    let s = state.clone();
+    let mid = msg.from.clone();
+    avatar_button.connect_clicked(move |_| profiles::open(&s, &mid));
+    let gutter = avatar_gutter(&avatar_button);
     outer.append(&gutter);
     content.append(&label);
     state
@@ -135,10 +145,10 @@ pub(super) fn append(
             },
         );
     }
-    Some((avatar.upcast(), label.upcast()))
+    Some((avatar_button.upcast(), label.upcast()))
 }
 
-fn avatar_gutter(avatar: &gtk::Overlay) -> gtk::Box {
+fn avatar_gutter(avatar: &impl IsA<gtk::Widget>) -> gtk::Box {
     // A horizontal gutter forwards the bubble height into GtkPicture's
     // width-for-height measurement, widening this column for taller messages.
     // A vertical, top-aligned gutter measures the avatar at its natural height.
@@ -232,6 +242,7 @@ mod tests {
     #[ignore = "requires a GTK display; run under xvfb-run"]
     fn gtk_avatar_column_keeps_text_media_and_continuations_aligned() {
         gtk::init().unwrap();
+        shell::load_css();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let mut rows = Vec::new();
         for (width, height, show_avatar) in [
@@ -263,8 +274,14 @@ mod tests {
                 .valign(gtk::Align::Start)
                 .child(&picture)
                 .build();
-            let gutter = avatar_gutter(&avatar);
-            avatar.set_visible(show_avatar);
+            let button = gtk::Button::builder()
+                .child(&avatar)
+                .halign(gtk::Align::Start)
+                .valign(gtk::Align::Start)
+                .css_classes(["flat", "line-msg-avatar-button"])
+                .build();
+            let gutter = avatar_gutter(&button);
+            button.set_visible(show_avatar);
             outer.append(&gutter);
             let content = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)

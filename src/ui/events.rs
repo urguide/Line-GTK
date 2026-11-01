@@ -56,6 +56,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             *state.message_cache.borrow_mut() = Default::default();
             mentions::reset(state);
             notes::close(state);
+            profiles::close(state);
             super::expressions::close(state);
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
@@ -265,9 +266,6 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             senders::avatar_ready(state, &mid, &avatar_path);
             if state.self_mid.borrow().as_deref() == Some(mid.as_str()) {
                 *state.self_avatar_path.borrow_mut() = Some(avatar_path.clone());
-                if std::path::Path::new(&avatar_path).exists() {
-                    attach_texture_async(state.profile_avatar.clone(), avatar_path.clone(), 64);
-                }
                 sync_discord_rpc(state);
             }
             if let Some(img) = state.chat_avatars.borrow().get(&mid).cloned()
@@ -550,6 +548,12 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::Profile { ui, action }) = pending.as_ref() {
+                if let Some(ui) = ui.upgrade() {
+                    profiles::response(state, &ui, action, ok, &result, error.as_deref());
+                }
+                return;
+            }
             if let Some(pending @ Pending::LatestMessages { .. }) = pending.as_ref() {
                 message_cache::response(state, pending, ok, &result, error.as_deref());
                 return;
@@ -696,6 +700,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     unreachable!("profile responses handled above")
                 }
                 Some(Pending::Notes { .. }) => unreachable!("notes responses handled above"),
+                Some(Pending::Profile { .. }) => unreachable!("profile responses handled above"),
                 Some(Pending::AddFriend) => {
                     toast(state, &crate::i18n::t("friend_ok"));
                     request_friends_list(state);
@@ -859,6 +864,7 @@ const MAX_SIDECAR_RECOVERY_ATTEMPTS: u8 = 3;
 pub(super) fn schedule_sidecar_recovery(state: &AppState) {
     *state.message_cache.borrow_mut() = Default::default();
     notes::close(state);
+    profiles::close(state);
     super::expressions::close(state);
     *state.session_ready.borrow_mut() = false;
     state.pending.borrow_mut().clear();
@@ -1011,6 +1017,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 pub(super) fn show_login(state: &AppState, hint: &str) {
     mentions::reset(state);
     notes::close(state);
+    profiles::close(state);
     super::expressions::close(state);
     state.stack.set_visible_child_name("login");
     login::show_qr_stage(&state.login);

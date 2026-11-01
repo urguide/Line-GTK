@@ -152,7 +152,7 @@ impl Ipc {
         Ok(pack)
     }
 
-    fn asset(&self, url: &str, dest: &Path, generation: u64) -> Result<PathBuf> {
+    pub(crate) fn asset(&self, url: &str, dest: &Path, generation: u64) -> Result<PathBuf> {
         self.active(generation)?;
         if dest.is_file() {
             return Ok(dest.to_owned());
@@ -693,6 +693,7 @@ impl Ipc {
                 Ok(json!({"resources":images}))
             }
             "notes" => self.notes_operation(p, generation),
+            "profile" => self.profile_operation(p, generation),
             "sender_profile" => {
                 let mid = p["mid"].as_str().context("sender ID missing")?;
                 let profile = self.call("bridge_contact", json!({"mid":mid}), generation)?;

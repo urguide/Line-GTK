@@ -792,6 +792,9 @@ impl<T: Transport> Engine<T> {
                     if method == "add_friend" {
                         self.store.remember_contact(&value)?;
                     }
+                    if method == "profile" && params["action"] == "add" {
+                        self.store.invalidate_catalogs()?;
+                    }
                     if method == "mute_chat" {
                         let mid = params["mid"].as_str().unwrap_or_default();
                         let muted = params["muted"].as_bool().unwrap_or(false);

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 pub struct SettingsDeps {
+    pub on_profile: Rc<dyn Fn()>,
     pub sidecar: Rc<Sidecar>,
     pub data_dir: PathBuf,
     pub config: Rc<RefCell<AppConfig>>,
@@ -38,6 +39,27 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
     let look = libadwaita::PreferencesGroup::builder()
         .title(i18n::t("settings_look"))
         .build();
+
+    let profile_group = libadwaita::PreferencesGroup::builder()
+        .title(i18n::t("my_profile"))
+        .build();
+    let profile_row = libadwaita::ActionRow::builder()
+        .title(i18n::t("my_profile"))
+        .subtitle(i18n::t("profile_settings_hint"))
+        .activatable(true)
+        .build();
+    profile_row.add_prefix(&gtk::Image::from_icon_name("avatar-default-symbolic"));
+    profile_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    let on_profile = deps.on_profile.clone();
+    let settings = win.downgrade();
+    profile_row.connect_activated(move |_| {
+        if let Some(win) = settings.upgrade() {
+            win.close();
+        }
+        on_profile();
+    });
+    profile_group.add(&profile_row);
+    appearance.add(&profile_group);
 
     let theme_row = libadwaita::ComboRow::builder()
         .title(i18n::t("theme"))

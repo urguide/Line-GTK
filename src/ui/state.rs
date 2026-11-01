@@ -61,7 +61,8 @@ pub(super) struct AppState {
     pub status: gtk::Label,
     pub login: Rc<login::LoginWidgets>,
     pub profile_label: gtk::Label,
-    pub profile_avatar: gtk::Picture,
+    pub profile_btn: gtk::Button,
+    pub profile_ui: Rc<RefCell<Option<Rc<super::profiles::ProfileUi>>>>,
     pub brand_label: gtk::Label,
     pub brand_icon: gtk::Image,
     pub chat_title: gtk::Label,
@@ -186,6 +187,10 @@ pub(super) struct PendingNotif {
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    Profile {
+        ui: std::rc::Weak<super::profiles::ProfileUi>,
+        action: String,
+    },
     ReplyOriginal {
         message_id: String,
         generation: u64,

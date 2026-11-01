@@ -110,6 +110,11 @@ first message's avatar and name when each adjacent pair is at most five minutes
 apart. A longer gap shows the avatar and name again, without a horizontal separator.
 Contact names prefer the account's custom LINE alias (`displayNameOverridden`)
 across chats, sender headers, friends, mentions, calls, notifications and Notes.
+The title bar keeps only the account name. Open **My profile** from its person
+icon or Settings to preview and save a new LINE profile photo or cover image.
+Click a sender's avatar in a conversation to view their photo, cover and status,
+add them as a friend or start a direct chat. Photo and cover updates are sent to
+LINE; cover uploads are associated with the profile only after OBS succeeds.
 Image/video reply previews reference the original message's cached media, including
 originals outside the loaded history page. Quotes do not create another media file
 or download a replacement; unavailable or withdrawn originals show `無法讀取`.
