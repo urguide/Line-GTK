@@ -227,6 +227,40 @@ scoped filesystem permission. Keep that old data directory when uninstalling
 the old app; do not use `flatpak uninstall --delete-data` on the old ID.
 Run only one of the old and new applications at a time when sharing data.
 
+To migrate into an independent new directory instead of sharing the old one,
+fully quit both applications (including the tray), then run from this repository:
+
+```sh
+python3 scripts/migrate-line-gtk.py --dry-run
+python3 scripts/migrate-line-gtk.py
+```
+
+The Python 3 script copies the complete profile: settings, login/E2EE state,
+SQLite (including its WAL), legacy JSON history, attachments, avatars and stickers.
+It rewrites local path fields and SQLite import records, checks database integrity,
+then installs the prepared copy. The old directory remains intact. A compatibility
+symlink at the new path is backed up and replaced with a real directory.
+Existing independent new profiles require `--replace`; they are renamed to
+`line-rust.backup-TIMESTAMP-ID` before replacement, rather than merged.
+Authentication validity remains subject to LINE; legacy JSON is imported by the
+app after login under the existing retention setting. Download folders outside
+the profile and external symlink targets remain at their existing locations.
+
+Use `--flatpak` for the new Flatpak destination
+(`~/.var/app/io.github.urguide.LineRust/data/line-rust`). If multiple old profiles
+exist, specify the source explicitly; custom destinations are also supported:
+
+```sh
+python3 scripts/migrate-line-gtk.py --source ~/.local/share/line-gtk
+python3 scripts/migrate-line-gtk.py --flatpak \
+  --source ~/.var/app/dev.linegtk.LineGtk/data/line-gtk
+python3 scripts/migrate-line-gtk.py --source /path/to/old-profile \
+  --destination /path/to/new-profile --replace
+```
+
+`--dry-run` only previews paths and replacement policy; full copy/SQLite validation
+runs during migration. It requires enough free space for a full profile copy.
+
 Environment variables now use `LINE_RUST_`. The old `LINE_GTK_ROOT` and
 `LINE_GTK_DISCORD_APP_ID` overrides are accepted for compatibility.
 Discord's default application ID is still the upstream public ID; a separate

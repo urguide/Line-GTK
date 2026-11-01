@@ -3,7 +3,13 @@ name: CI
 on:
   push:
     branches: [master, main]
+    paths-ignore:
+      - 'scripts/**'
+      - 'aur/**'
   pull_request:
+    paths-ignore:
+      - 'scripts/**'
+      - 'aur/**'
   workflow_dispatch:
 
 permissions:
