@@ -1571,10 +1571,9 @@ pub(super) fn set_side_state(state: &AppState, name: &str, empty_text: Option<&s
     if let Some(text) = empty_text {
         state.side_empty.set_text(text);
     }
-    if name == "loading" {
-        state.side_spinner.set_spinning(true);
-        state.side_spinner.set_visible(true);
-    }
+    let loading = name == "loading";
+    state.side_spinner.set_spinning(loading);
+    state.side_spinner.set_visible(loading);
     state.side_stack.set_visible_child_name(name);
 }
 

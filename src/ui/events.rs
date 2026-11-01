@@ -802,8 +802,13 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
             state.status.set_text(&crate::i18n::t("loading_chats"));
             set_side_state(state, "loading", None);
             set_msg_state(state, "idle", None);
-            if let Ok(id) = state.sidecar.list_chats() {
-                state.pending.borrow_mut().insert(id, Pending::ListChats);
+            match state.sidecar.list_chats() {
+                Ok(id) => {
+                    state.pending.borrow_mut().insert(id, Pending::ListChats);
+                }
+                Err(error) => {
+                    set_side_state(state, "empty", Some(&error.to_string()));
+                }
             }
             // If chats were already painted from a warm cache event, open last chat now.
             maybe_restore_last_chat(state);
