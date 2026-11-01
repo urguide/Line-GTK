@@ -82,11 +82,16 @@ impl Ipc {
                 std::fs::rename(source, &dest)?;
                 return Ok(json!({"path":dest,"contentType":kind}));
             }
-            line_rust_core::notes::normalize(
+            let mut result = line_rust_core::notes::normalize(
                 &action,
                 &raw,
                 p["account"].as_str().unwrap_or_default(),
-            )
+            )?;
+            line_rust_core::notes::resolve_author_names(&mut result, |mid| {
+                self.call("bridge_contact", json!({"mid":mid}), generation)
+            });
+            self.active(generation)?;
+            Ok(result)
         })();
         for file in staged {
             let _ = std::fs::remove_file(file);

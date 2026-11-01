@@ -76,38 +76,38 @@ pub(super) fn wire(state: &AppState) {
     let s = state.clone();
     state
         .composer
+        .buffer()
         .connect_cursor_position_notify(move |_| schedule(&s));
     let s = state.clone();
     state
         .composer
-        .connect_selection_bound_notify(move |_| schedule(&s));
+        .buffer()
+        .connect_mark_set(move |_, _, _| schedule(&s));
     wire_selection(state);
 }
 
-fn track_edits(ui: &Rc<MentionUi>, composer: &gtk::Entry) {
-    // EntryBuffer emits exact edits, including paste, replacement and IME commits.
+fn track_edits(ui: &Rc<MentionUi>, composer: &super::composer::Composer) {
+    // TextBuffer offsets and mention ranges both count Unicode characters.
+    let selected = ui.clone();
+    composer.buffer().connect_insert_text(move |_, iter, text| {
+        model::inserted(
+            &mut selected.selected.borrow_mut(),
+            iter.offset() as usize,
+            text.chars().count(),
+        );
+    });
     let selected = ui.clone();
     composer
         .buffer()
-        .connect_local("inserted-text", false, move |args| {
-            let position = args[1].get::<u32>().unwrap() as usize;
-            let count = args[3].get::<u32>().unwrap() as usize;
-            model::inserted(&mut selected.selected.borrow_mut(), position, count);
-            None
+        .connect_delete_range(move |_, start, end| {
+            model::deleted(
+                &mut selected.selected.borrow_mut(),
+                start.offset() as usize,
+                (end.offset() - start.offset()) as usize,
+            );
         });
-    let selected = ui.clone();
-    composer
-        .buffer()
-        .connect_local("deleted-text", false, move |args| {
-            let position = args[1].get::<u32>().unwrap() as usize;
-            let count = args[2].get::<u32>().unwrap() as usize;
-            model::deleted(&mut selected.selected.borrow_mut(), position, count);
-            None
-        });
-    if let Some(text) = composer.delegate().and_downcast::<gtk::Text>() {
-        let ui = ui.clone();
-        text.connect_preedit_changed(move |_, preedit| ui.preediting.set(!preedit.is_empty()));
-    }
+    let ui = ui.clone();
+    composer.connect_preedit_changed(move |_, preedit| ui.preediting.set(!preedit.is_empty()));
 }
 
 fn wire_selection(state: &AppState) {
@@ -121,63 +121,67 @@ fn wire_selection(state: &AppState) {
         refresh(&s);
         s.composer.grab_focus();
     });
-    let s = state.clone();
-    let keys = gtk::EventControllerKey::new();
-    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-    keys.connect_key_pressed(move |_, key, _, modifiers| {
-        // Do not steal candidate navigation / confirmation from Chinese IMEs.
-        if s.mention_ui.preediting.get() {
-            return glib::Propagation::Proceed;
-        }
-        if matches!(
-            key,
-            gdk::Key::Up | gdk::Key::Down | gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Tab
-        ) {
-            refresh(&s);
-        }
-        if !s.mention_ui.panel.is_visible()
-            || modifiers.intersects(
-                gdk::ModifierType::CONTROL_MASK
-                    | gdk::ModifierType::ALT_MASK
-                    | gdk::ModifierType::SUPER_MASK,
-            )
-        {
-            return glib::Propagation::Proceed;
-        }
-        match key {
-            gdk::Key::Up | gdk::Key::Down => {
-                let ui = &s.mention_ui;
-                let count = ui.filtered.borrow().len() as i32;
-                if count > 0 {
-                    let index = ui.list.selected_row().map_or(0, |r| r.index());
-                    let next = (index + if key == gdk::Key::Up { -1 } else { 1 }).rem_euclid(count);
-                    if let Some(row) = ui.list.row_at_index(next) {
-                        ui.list.select_row(Some(&row));
-                        if let Some(point) =
-                            row.compute_point(&ui.list, &gtk::graphene::Point::new(0.0, 0.0))
-                        {
-                            ui.scroll.vadjustment().clamp_page(
-                                point.y() as f64,
-                                (point.y() + row.height() as f32) as f64,
-                            );
-                        }
+}
+
+pub(super) fn is_preediting(state: &AppState) -> bool {
+    state.mention_ui.preediting.get()
+}
+
+pub(super) fn handle_key(
+    s: &AppState,
+    key: gdk::Key,
+    modifiers: gdk::ModifierType,
+) -> glib::Propagation {
+    // Do not steal candidate navigation / confirmation from Chinese IMEs.
+    if s.mention_ui.preediting.get() {
+        return glib::Propagation::Proceed;
+    }
+    if matches!(
+        key,
+        gdk::Key::Up | gdk::Key::Down | gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Tab
+    ) {
+        refresh(s);
+    }
+    if !s.mention_ui.panel.is_visible()
+        || modifiers.intersects(
+            gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::ALT_MASK
+                | gdk::ModifierType::SUPER_MASK,
+        )
+    {
+        return glib::Propagation::Proceed;
+    }
+    match key {
+        gdk::Key::Up | gdk::Key::Down => {
+            let ui = &s.mention_ui;
+            let count = ui.filtered.borrow().len() as i32;
+            if count > 0 {
+                let index = ui.list.selected_row().map_or(0, |r| r.index());
+                let next = (index + if key == gdk::Key::Up { -1 } else { 1 }).rem_euclid(count);
+                if let Some(row) = ui.list.row_at_index(next) {
+                    ui.list.select_row(Some(&row));
+                    if let Some(point) =
+                        row.compute_point(&ui.list, &gtk::graphene::Point::new(0.0, 0.0))
+                    {
+                        ui.scroll
+                            .vadjustment()
+                            .clamp_page(point.y() as f64, (point.y() + row.height() as f32) as f64);
                     }
                 }
-                glib::Propagation::Stop
             }
-            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Tab
-                if !modifiers.contains(gdk::ModifierType::SHIFT_MASK) =>
-            {
-                if let Some(row) = s.mention_ui.list.selected_row() {
-                    choose(&s, row.index() as usize);
-                    return glib::Propagation::Stop;
-                }
-                glib::Propagation::Proceed
-            }
-            _ => glib::Propagation::Proceed,
+            glib::Propagation::Stop
         }
-    });
-    state.composer.add_controller(keys);
+        gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Tab
+            if !modifiers.contains(gdk::ModifierType::SHIFT_MASK) =>
+        {
+            if let Some(row) = s.mention_ui.list.selected_row() {
+                choose(s, row.index() as usize);
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        }
+        _ => glib::Propagation::Proceed,
+    }
 }
 
 fn schedule(state: &AppState) {
@@ -318,7 +322,7 @@ fn choose(state: &AppState, index: usize) {
     insert_member(ui, &state.composer, member);
 }
 
-fn insert_member(ui: &MentionUi, composer: &gtk::Entry, member: Member) {
+fn insert_member(ui: &MentionUi, composer: &super::composer::Composer, member: Member) {
     let text = composer.text();
     let cursor = composer.position().max(0) as usize;
     let Some((start, _)) = model::query(&text, cursor, &ui.selected.borrow()) else {
@@ -328,7 +332,7 @@ fn insert_member(ui: &MentionUi, composer: &gtk::Entry, member: Member) {
     composer.delete_text(start as i32, cursor as i32);
     let mut position = start as i32;
     composer.insert_text(&format!("{label} "), &mut position);
-    // A max-length limit may truncate the insert; only keep complete names.
+    // Only retain mentions whose complete label is present in the buffer.
     let new_text = composer.text();
     let end = start + label.chars().count();
     if model::byte_offset(&new_text, end).is_some_and(|end_byte| {
@@ -367,10 +371,10 @@ mod tests {
 
     #[test]
     #[ignore = "requires a GTK display; run under xvfb-run"]
-    fn gtk_entry_preserves_selected_identity_through_real_buffer_signals() {
+    fn gtk_composer_preserves_selected_identity_through_real_buffer_signals() {
         gtk::init().unwrap();
         let ui = MentionUi::new();
-        let composer = gtk::Entry::new();
+        let composer = super::super::composer::Composer::new();
         track_edits(&ui, &composer);
         composer.set_text("😀 @j suffix");
         composer.set_position(4);
@@ -400,12 +404,25 @@ mod tests {
             wire["MENTIONEES"][0],
             serde_json::json!({"S":"3","E":"10","M":"u1"})
         );
+        composer.insert_text("第一行😀\n", &mut 0);
+        assert_eq!(composer.text(), "第一行😀\n😀 @Johnny  suffix");
+        let (_, metadata) = model::compose(
+            &composer.text(),
+            &serde_json::json!({}),
+            &ui.selected.borrow(),
+        );
+        let wire: serde_json::Value =
+            serde_json::from_str(metadata["MENTION"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            wire["MENTIONEES"][0],
+            serde_json::json!({"S":"9","E":"16","M":"u1"})
+        );
+        composer.delete_text(0, 5);
         composer.delete_text(4, 5);
         assert!(ui.selected.borrow().is_empty());
-        let text = composer.delegate().and_downcast::<gtk::Text>().unwrap();
-        text.emit_preedit_changed("中");
+        composer.emit_by_name::<()>("preedit-changed", &[&"中"]);
         assert!(ui.preediting.get());
-        text.emit_preedit_changed("");
+        composer.emit_by_name::<()>("preedit-changed", &[&""]);
         assert!(!ui.preediting.get());
         composer.set_text("@j");
         composer.set_position(-1);

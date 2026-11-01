@@ -322,6 +322,9 @@ pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bo
     state.chat_unread_badges.borrow_mut().clear();
 
     for chat in &mut chats {
+        if chat.mid.starts_with('u') {
+            senders::apply_profile(state, chat);
+        }
         if !chat.preview.is_empty() {
             chat.preview = localize_preview(&chat.preview);
         }
@@ -353,6 +356,11 @@ pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bo
         .filter(|chat| !chat_is_hidden(state, &chat.mid))
         .count();
     *state.chats.borrow_mut() = chats;
+    if let Some(mid) = state.current_chat.borrow().as_deref()
+        && let Some(chat) = state.chats.borrow().iter().find(|c| c.mid == mid)
+    {
+        state.chat_title.set_text(&chat.name);
+    }
     filter_chats(
         state,
         &if *state.sidebar_compact.borrow() {
@@ -414,6 +422,7 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
         if let Some(cur) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == mid) {
             if !chat.name.is_empty() && chat.name != mid {
                 cur.name = chat.name.clone();
+                cur.alias = chat.alias.clone();
             }
             if !chat.kind.is_empty() {
                 cur.kind = chat.kind.clone();
@@ -855,11 +864,7 @@ pub(super) fn apply_read_counts(state: &AppState, chat_mid: &str, counts: HashMa
     for (id, label) in state.receipt_slots.borrow().iter() {
         if let Some(count) = current.get(id).filter(|n| **n > 0) {
             let ts = times.get(id).copied().unwrap_or(0);
-            label.set_text(&format_outgoing_status(
-                Some(*count),
-                chat_mid.starts_with(['c', 'r']),
-                ts,
-            ));
+            label.set_text(&format_outgoing_status(Some(*count), ts));
             label.set_tooltip_text(Some(&crate::i18n::t("status_read")));
             label.add_css_class("line-msg-status-read");
         }

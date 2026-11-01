@@ -368,10 +368,16 @@ fn old_catalog_schema_migrates_without_losing_rows_or_breaking_writes() {
     )
     .unwrap();
     drop(old);
-    for _ in 0..2 {
+    for attempt in 0..2 {
         let mut store = Store::open_with_clock(&path, Arc::new(|| START + 1)).unwrap();
         store.set_account("me");
-        assert!(store.catalog("list_chats", DAY).unwrap().is_some());
+        // The alias upgrade invalidates old public-name snapshots once, but
+        // keeps them available offline and doesn't invalidate the next refresh.
+        assert_eq!(
+            store.catalog("list_chats", DAY).unwrap().is_some(),
+            attempt > 0
+        );
+        assert!(store.stale_catalog("list_chats", DAY).unwrap().is_some());
         store.invalidate_catalogs().unwrap();
         assert!(store.catalog("list_chats", DAY).unwrap().is_none());
         assert!(store.stale_catalog("list_chats", DAY).unwrap().is_some());

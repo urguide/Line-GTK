@@ -38,6 +38,11 @@ pub fn picture(row: &Value) -> Option<&str> {
 }
 
 pub fn name(row: &Value) -> Option<&str> {
+    // A contact's user-defined name wins even when it is nested below a
+    // top-level public profile name (for example bridge_users wrappers).
+    if let Some(alias) = alias(row) {
+        return Some(alias);
+    }
     for source in sources(row) {
         for key in ["displayName", "profileName", "chatName", "name"] {
             if let Some(name) = text(&source[key]) {
@@ -46,6 +51,12 @@ pub fn name(row: &Value) -> Option<&str> {
         }
     }
     None
+}
+
+pub fn alias(row: &Value) -> Option<&str> {
+    sources(row)
+        .into_iter()
+        .find_map(|source| text(&source["displayNameOverridden"]))
 }
 
 fn mid(row: &Value) -> Option<&str> {
@@ -70,7 +81,16 @@ fn merge_profile(
 ) -> Option<String> {
     let mid = mid(profile)?;
     let row = rows.entry(mid.to_owned()).or_insert_with(|| entry(mid));
-    if let Some(name) = name(profile) {
+    if let Some(alias) = alias(profile) {
+        row["displayNameOverridden"] = json!(alias);
+    } else if sources(profile)
+        .iter()
+        .any(|s| s["displayNameOverridden"].is_string())
+    {
+        // An explicitly cleared alias restores the contact's public name.
+        row["displayNameOverridden"] = Value::Null;
+    }
+    if let Some(name) = alias(row).or_else(|| name(profile)).map(str::to_owned) {
         row["name"] = json!(name);
     }
     if let Some(path) = picture(profile) {

@@ -168,6 +168,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             ensure_chat_visible(
                 state,
                 &ChatInfo {
+                    alias: None,
                     mid: peer.clone(),
                     name: peer_display_name(state, &peer),
                     kind: if peer.starts_with(['c', 'r']) {

@@ -11,15 +11,14 @@ struct LayoutRow {
     mine: bool,
     time: i64,
     day: gtk::Label,
-    gap: gtk::Separator,
     identity: Option<(gtk::Widget, gtk::Widget)>,
 }
 
-fn seconds(time: i64) -> i64 {
+fn milliseconds(time: i64) -> i64 {
     if time > 1_000_000_000_000 {
-        time / 1000
-    } else {
         time
+    } else {
+        time.saturating_mul(1000)
     }
 }
 
@@ -28,18 +27,20 @@ fn message_boundary(
     from: &str,
     mine: bool,
     time: i64,
-) -> (bool, bool) {
+) -> bool {
     let Some((sender, was_mine, last_time)) = previous else {
-        return (false, false);
+        return false;
     };
-    let gap =
-        last_time > 0 && time > 0 && seconds(time).saturating_sub(seconds(last_time)) >= 20 * 60;
-    let consecutive = !from.is_empty() && sender == from && was_mine == mine && !gap;
-    (consecutive, gap)
+    !from.is_empty()
+        && sender == from
+        && was_mine == mine
+        && last_time > 0
+        && time > 0
+        && (0..=5 * 60 * 1000).contains(&milliseconds(time).saturating_sub(milliseconds(last_time)))
 }
 
 fn update_layout_row(previous: Option<&LayoutRow>, row: &LayoutRow) {
-    let (consecutive, gap) = message_boundary(
+    let consecutive = message_boundary(
         previous.map(|p| (p.from.as_str(), p.mine, p.time)),
         &row.from,
         row.mine,
@@ -47,10 +48,9 @@ fn update_layout_row(previous: Option<&LayoutRow>, row: &LayoutRow) {
     );
     let new_day = row.time > 0 && previous.is_none_or(|p| day_key(p.time) != day_key(row.time));
     row.day.set_visible(new_day);
-    row.gap.set_visible(gap);
     if let Some((avatar, name)) = &row.identity {
-        avatar.set_visible(!consecutive || new_day);
-        name.set_visible(!consecutive || new_day);
+        avatar.set_visible(!consecutive);
+        name.set_visible(!consecutive);
     }
 }
 
@@ -309,12 +309,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         .halign(gtk::Align::Center)
         .css_classes(["line-day-sep", "line-day-sep-row"])
         .build();
-    let gap = gtk::Separator::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .css_classes(["line-time-gap"])
-        .build();
     row_content.append(&day);
-    row_content.append(&gap);
     let outer = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
@@ -496,14 +491,6 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     content.append(&bubble);
 
     if msg.mine {
-        let col = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(2)
-            .halign(gtk::Align::End)
-            .hexpand(true)
-            .build();
-        col.append(&content);
-
         let chat = state.current_chat.borrow().clone().unwrap_or_default();
         let count = state
             .read_counts
@@ -522,21 +509,24 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         }
         let read = count.is_some_and(|n| n > 0);
         let status = gtk::Label::builder()
-            .label(format_outgoing_status(
-                count,
-                chat.starts_with(['c', 'r']),
-                msg.created_time,
-            ))
+            .label(format_outgoing_status(count, msg.created_time))
             .halign(gtk::Align::End)
+            .valign(gtk::Align::End)
+            .xalign(1.0)
+            .justify(gtk::Justification::Right)
             .tooltip_text(if read {
                 crate::i18n::t("status_read")
             } else {
                 crate::i18n::t("status_sent")
             })
             .css_classes(if read {
-                vec!["line-msg-status", "line-msg-status-read"]
+                vec![
+                    "line-msg-status",
+                    "line-msg-status-outgoing",
+                    "line-msg-status-read",
+                ]
             } else {
-                vec!["line-msg-status"]
+                vec!["line-msg-status", "line-msg-status-outgoing"]
             })
             .build();
         if !msg.id.is_empty() {
@@ -545,18 +535,17 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
                 .borrow_mut()
                 .insert(msg.id.clone(), status.clone());
         }
-        let footer = gtk::Box::builder()
+        let actions = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .halign(gtk::Align::End)
+            .valign(gtk::Align::End)
             .build();
-        footer.append(&status);
-        if !is_pending && !msg.id.is_empty() {
-            append_message_menu(state, &footer, &content, msg);
-        }
-        col.append(&footer);
         outer.append(&gtk::Box::builder().hexpand(true).build());
-        outer.append(&col);
+        if !is_pending && !msg.id.is_empty() {
+            append_message_menu(state, &actions, &content, msg);
+            outer.append(&actions);
+        }
+        outer.append(&status);
+        outer.append(&content);
     } else {
         // Incoming: bubble + time on the right (mobile style).
         let time = gtk::Label::builder()
@@ -585,7 +574,6 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         mine: msg.mine,
         time: msg.created_time,
         day,
-        gap,
         identity,
     };
     {
@@ -798,27 +786,17 @@ pub(super) fn apply_message_unsent(state: &AppState, chat_mid: &str, message_id:
     *state.msg_list_fp.borrow_mut() = None;
 }
 
-pub(super) fn format_outgoing_status(count: Option<u64>, group: bool, created_ms: i64) -> String {
+pub(super) fn format_outgoing_status(count: Option<u64>, created_ms: i64) -> String {
     let t = format_msg_time(created_ms);
     if let Some(count) = count.filter(|n| *n > 0) {
-        if group {
-            let read = crate::i18n::tf("status_read_count", &[("n", &count.to_string())]);
-            return if t.is_empty() {
-                read
-            } else {
-                format!("{read} {t}")
-            };
-        }
-        // Mobile LINE style: "Read 4:34 PM" (+ ✓✓ cue)
+        let read = crate::i18n::tf("status_read_count", &[("n", &count.to_string())]);
         if t.is_empty() {
-            format!("✓✓ {}", crate::i18n::t("status_read"))
+            read
         } else {
-            format!("✓✓ {} {}", crate::i18n::t("status_read"), t)
+            format!("{read}\n{t}")
         }
-    } else if t.is_empty() {
-        "✓".into()
     } else {
-        format!("✓ {t}")
+        t
     }
 }
 
@@ -1961,35 +1939,60 @@ pub(super) fn jump_to_latest(state: &AppState) {
 #[cfg(test)]
 mod receipt_tests {
     #[test]
-    fn message_grouping_respects_sender_and_twenty_minute_boundary() {
+    fn message_grouping_uses_adjacent_messages_with_an_inclusive_five_minute_limit() {
         use super::message_boundary;
         let time = 1_800_000_000_000;
-        assert_eq!(message_boundary(None, "a", false, time), (false, false));
-        assert_eq!(
-            message_boundary(Some(("a", false, time)), "a", false, time + 1_199_000),
-            (true, false)
-        );
-        assert_eq!(
-            message_boundary(Some(("a", false, time)), "a", false, time + 1_200_000),
-            (false, true)
-        );
-        assert_eq!(
-            message_boundary(Some(("a", false, time)), "b", false, time + 1_000),
-            (false, false)
-        );
-        assert_eq!(
-            message_boundary(Some(("", false, time)), "", false, time + 1_000),
-            (false, false)
-        );
-        assert_eq!(
-            message_boundary(
-                Some(("a", false, time / 1000)),
+        assert!(!message_boundary(None, "a", false, time));
+        for delta in [0, 299_999, 300_000] {
+            assert!(message_boundary(
+                Some(("a", false, time)),
                 "a",
                 false,
-                time / 1000 + 1200
-            ),
-            (false, true)
-        );
+                time + delta
+            ));
+        }
+        for delta in [-1, 300_001, 1_200_000] {
+            assert!(!message_boundary(
+                Some(("a", false, time)),
+                "a",
+                false,
+                time + delta
+            ));
+        }
+        assert!(!message_boundary(
+            Some(("a", false, time)),
+            "b",
+            false,
+            time + 1000
+        ));
+        assert!(!message_boundary(
+            Some(("a", false, time)),
+            "a",
+            true,
+            time + 1000
+        ));
+        assert!(!message_boundary(
+            Some(("", false, time)),
+            "",
+            false,
+            time + 1000
+        ));
+        assert!(!message_boundary(Some(("a", false, 0)), "a", false, time));
+        assert!(message_boundary(
+            Some(("a", false, time / 1000)),
+            "a",
+            false,
+            time / 1000 + 300
+        ));
+        // A long chain stays grouped: compare each pair, not against its first row.
+        for index in 1..10 {
+            assert!(message_boundary(
+                Some(("a", false, time + (index - 1) * 240_000)),
+                "a",
+                false,
+                time + index * 240_000
+            ));
+        }
     }
 
     #[test]
@@ -2003,7 +2006,6 @@ mod receipt_tests {
             mine: false,
             time,
             day: gtk::Label::new(None),
-            gap: gtk::Separator::new(gtk::Orientation::Horizontal),
             identity: Some((
                 gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast(),
                 gtk::Label::new(None).upcast(),
@@ -2024,22 +2026,29 @@ mod receipt_tests {
         assert!(next.identity.as_ref().unwrap().0.is_visible());
         update_layout_row(Some(&first), &next);
         assert!(!next.identity.as_ref().unwrap().0.is_visible());
-        let later = make("5", "a", time + 1_203_000);
+        let later = make("5", "a", time + 303_001);
         update_layout_row(Some(&next), &later);
         assert!(later.identity.as_ref().unwrap().0.is_visible());
-        assert!(later.gap.is_visible());
     }
     use super::*;
 
     #[test]
-    fn direct_read_keeps_checks_and_groups_show_counts_only_when_positive() {
-        assert_eq!(format_outgoing_status(None, true, 0), "✓");
-        assert_eq!(format_outgoing_status(Some(0), true, 0), "✓");
-        assert!(format_outgoing_status(Some(1), false, 0).starts_with("✓✓ "));
+    fn outgoing_read_count_is_above_time_and_unread_shows_only_time() {
+        let timestamp = 1_800_000_000_000;
+        let time = format_msg_time(timestamp);
+        assert_eq!(format_outgoing_status(None, timestamp), time);
+        assert_eq!(format_outgoing_status(Some(0), timestamp), time);
+        for count in [1, 3] {
+            let read = crate::i18n::tf("status_read_count", &[("n", &count.to_string())]);
+            assert_eq!(
+                format_outgoing_status(Some(count), timestamp),
+                format!("{read}\n{time}")
+            );
+        }
         assert_eq!(
-            format_outgoing_status(Some(3), true, 0),
+            format_outgoing_status(Some(3), 0),
             crate::i18n::tf("status_read_count", &[("n", "3")])
         );
-        assert!(!format_outgoing_status(Some(3), true, 0).contains('✓'));
+        assert_eq!(format_outgoing_status(None, 0), "");
     }
 }

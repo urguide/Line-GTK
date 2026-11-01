@@ -18,6 +18,7 @@ pub fn add(userid: &str, mut call: impl FnMut(&str, Value) -> Result<Value>) -> 
     let request = call("bridge_friend_request", json!({"mid":mid,"userid":userid}));
     Ok(
         json!({"mid":mid,"displayName":crate::catalog::name(&contact).unwrap_or(userid),
+        "displayNameOverridden":crate::catalog::alias(&contact),
         "picturePath":crate::catalog::picture(&contact),
         "requestSent":request.is_ok(),"requestError":request.err().map(|e|e.to_string())}),
     )

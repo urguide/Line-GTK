@@ -18,7 +18,7 @@ fn post(value: &Value, account: &str) -> Result<Value> {
     let contents = &row["contents"];
     Ok(json!({
         "id":id,"author":author,
-        "authorName":writer["writerName"].as_str().or(writer["displayName"].as_str()).unwrap_or(author),
+        "authorName":crate::catalog::name(writer).or(writer["writerName"].as_str()).unwrap_or(author),
         "mine": !account.is_empty() && author == account,
         "text":contents["text"].as_str().unwrap_or_default(),
         "createdTime":integer(&info["createdTime"]),"updatedTime":integer(&info["updatedTime"]),
@@ -38,7 +38,8 @@ pub fn comments(value: &Value) -> Result<Value> {
     let items: Vec<Value> = rows.iter().map(|row| {
         let writer = &row["writerInfo"];
         json!({"id":string(&row["commentId"]),
-            "authorName": writer["writerName"].as_str().or(row["displayName"].as_str()).unwrap_or_default(),
+            "author":writer["writerMid"].as_str().or(writer["mid"].as_str()).or(row["writerMid"].as_str()).unwrap_or_default(),
+            "authorName": crate::catalog::name(writer).or(writer["writerName"].as_str()).or(row["displayName"].as_str()).unwrap_or_default(),
             "text":row["commentText"].as_str().unwrap_or_default(),
             "createdTime":integer(&row["createdTime"]),
             "attachments":row["contentsList"].as_array().map_or(0,Vec::len)})
@@ -79,4 +80,41 @@ pub fn normalize(action: &str, value: &Value, account: &str) -> Result<Value> {
         "comments" => comments(value),
         _ => Ok(json!({"ok":true})),
     }
+}
+
+/// Notes carry public writer names; resolve each distinct author through the
+/// account's contact API so posts and comments use the same alias as chats.
+pub fn resolve_author_names(value: &mut Value, mut contact: impl FnMut(&str) -> Result<Value>) {
+    fn walk(
+        value: &mut Value,
+        names: &mut std::collections::HashMap<String, Option<String>>,
+        contact: &mut impl FnMut(&str) -> Result<Value>,
+    ) {
+        if let Some(author) = value["author"]
+            .as_str()
+            .filter(|mid| !mid.is_empty())
+            .map(str::to_owned)
+        {
+            let name = names.entry(author.clone()).or_insert_with(|| {
+                contact(&author)
+                    .ok()
+                    .and_then(|profile| crate::catalog::name(&profile).map(str::to_owned))
+            });
+            if let Some(name) = name {
+                value["authorName"] = json!(name);
+            }
+        }
+        if let Some(rows) = value.as_array_mut() {
+            for row in rows {
+                walk(row, names, contact);
+            }
+        } else if let Some(fields) = value.as_object_mut() {
+            for row in fields.values_mut() {
+                if row.is_array() || row.is_object() {
+                    walk(row, names, contact);
+                }
+            }
+        }
+    }
+    walk(value, &mut std::collections::HashMap::new(), &mut contact);
 }

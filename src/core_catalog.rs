@@ -700,7 +700,9 @@ impl Ipc {
                 let avatar =
                     self.avatar(mid, line_rust_core::catalog::picture(&profile), generation);
                 self.active(generation)?;
-                Ok(json!({"mid":mid,"name":name,"avatarPath":avatar}))
+                Ok(
+                    json!({"mid":mid,"name":name,"displayNameOverridden":line_rust_core::catalog::alias(&profile),"avatarPath":avatar}),
+                )
             }
             "profile_avatar" => {
                 let mid = p["mid"].as_str().context("profile ID missing")?;

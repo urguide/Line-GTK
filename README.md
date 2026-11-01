@@ -105,8 +105,11 @@ application's sticker cache, including emoji under `cache/stickers/emoji/`.
 
 Hidden and muted chats only alert for an explicit mention of the signed-in user;
 `@all` does not override either setting. Global notification settings still apply.
-Consecutive messages from one sender share the first message's avatar and name.
-A gap of at least 20 minutes starts a new block with a subtle gray separator.
+In both direct and group chats, consecutive messages from one sender share the
+first message's avatar and name when each adjacent pair is at most five minutes
+apart. A longer gap shows the avatar and name again, without a horizontal separator.
+Contact names prefer the account's custom LINE alias (`displayNameOverridden`)
+across chats, sender headers, friends, mentions, calls, notifications and Notes.
 Image/video reply previews reference the original message's cached media, including
 originals outside the loaded history page. Quotes do not create another media file
 or download a replacement; unavailable or withdrawn originals show `無法讀取`.
@@ -353,6 +356,9 @@ Discord's default application ID is still the upstream public ID; a separate
 Discord application must be configured in Settings to change its registered branding.
 
 ## Reply to messages
+
+Press **Enter** to send a message, or **Shift+Enter** to insert a new line.
+The input expands for multiple lines and scrolls for longer drafts.
 
 Right-click a message or open its **⋮** menu and choose **Reply**. The original
 message appears above the text input; type your reply and press Enter or Send.

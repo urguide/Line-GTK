@@ -127,6 +127,16 @@ impl Store {
                 "ALTER TABLE catalogs ADD COLUMN invalidated INTEGER NOT NULL DEFAULT 0",
             )?;
         }
+        // Old normalized catalogs discarded custom contact names. Refresh once
+        // after upgrading, keeping their rows available for offline fallback.
+        db.execute_batch(
+            "BEGIN;
+             UPDATE catalogs SET invalidated=1
+             WHERE kind IN ('list_chats','list_friends')
+               AND NOT EXISTS(SELECT 1 FROM migrations WHERE path='contact-alias-v1');
+             INSERT OR IGNORE INTO migrations(path,account) VALUES('contact-alias-v1','');
+             COMMIT;",
+        )?;
         Ok(Self {
             db,
             account: String::new(),
@@ -303,7 +313,14 @@ impl Store {
                 .as_array_mut()
                 .context("invalid contact catalog")?;
             let mut row=rows.iter().find(|row|row["mid"]==mid).cloned().unwrap_or_else(||json!({"mid":mid,"kind":"dm","lastActivity":0,"unread":0,"preview":"","muted":false}));
-            row["name"] = contact["displayName"].clone();
+            if let Some(alias) = crate::catalog::alias(contact) {
+                row["displayNameOverridden"] = json!(alias);
+            }
+            row["name"] = json!(
+                crate::catalog::alias(&row)
+                    .or_else(|| crate::catalog::name(contact))
+                    .unwrap_or(mid)
+            );
             if !contact["picturePath"].is_null() {
                 row["picturePath"] = contact["picturePath"].clone();
             }

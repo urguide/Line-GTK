@@ -1,6 +1,7 @@
 mod call_window;
 mod calls;
 mod chats;
+mod composer;
 mod composer_media;
 mod diagnostics;
 mod downloads;
@@ -1323,7 +1324,27 @@ fn wire_actions(state: &AppState) {
         s.composer.grab_focus();
     });
     let s = state.clone();
-    state.composer.connect_activate(move |_| send_current(&s));
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    keys.connect_key_pressed(move |_, key, _, modifiers| {
+        if mentions::handle_key(&s, key, modifiers) == glib::Propagation::Stop {
+            return glib::Propagation::Stop;
+        }
+        if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
+            && !modifiers.intersects(
+                gdk::ModifierType::SHIFT_MASK
+                    | gdk::ModifierType::CONTROL_MASK
+                    | gdk::ModifierType::ALT_MASK
+                    | gdk::ModifierType::SUPER_MASK,
+            )
+            && !mentions::is_preediting(&s)
+        {
+            send_current(&s);
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    state.composer.add_controller(keys);
 
     let s = state.clone();
     state.send_btn.connect_clicked(move |_| send_current(&s));
@@ -1775,5 +1796,14 @@ fn peer_display_name(state: &AppState, mid: &str) -> String {
         .iter()
         .find(|c| c.mid == mid)
         .map(|c| c.name.clone())
+        .or_else(|| {
+            state.friends_ui.borrow().as_ref().and_then(|ui| {
+                ui.friends
+                    .borrow()
+                    .iter()
+                    .find(|c| c.mid == mid)
+                    .map(|c| c.name.clone())
+            })
+        })
         .unwrap_or_else(|| mid.to_string())
 }

@@ -12,6 +12,47 @@ fn row<'a>(result: &'a Value, key: &str, mid: &str) -> &'a Value {
 }
 
 #[test]
+fn custom_alias_precedes_public_names_in_every_contact_shape() {
+    for profile in [
+        json!({"displayName":"Public", "displayNameOverridden":" My alias "}),
+        json!({"displayName":"Public", "raw":{"displayNameOverridden":"My alias"}}),
+        json!({"displayName":"Public", "raw":{"contact":{"displayNameOverridden":"My alias"}}}),
+        json!({"displayName":"Public", "targetProfileDetail":{"displayNameOverridden":"My alias"}}),
+    ] {
+        assert_eq!(catalog::name(&profile), Some("My alias"));
+    }
+    assert_eq!(
+        catalog::name(&json!({"displayName":"Public", "displayNameOverridden":" "})),
+        Some("Public")
+    );
+}
+
+#[test]
+fn catalog_alias_survives_partial_profiles_and_can_be_renamed_or_cleared() {
+    let previous =
+        json!({"friends":[{"mid":"u1","name":"Old alias","displayNameOverridden":"Old alias"}]});
+    for (profile, expected) in [
+        (json!({"mid":"u1","displayName":"Public"}), "Old alias"),
+        (
+            json!({"mid":"u1","displayName":"Public","displayNameOverridden":"New alias"}),
+            "New alias",
+        ),
+        (
+            json!({"mid":"u1","displayName":"Public","displayNameOverridden":""}),
+            "Public",
+        ),
+    ] {
+        let result = catalog::load("list_friends", &previous, |method, _| match method {
+            "bridge_contact_ids" => Ok(json!(["u1"])),
+            "bridge_contacts" => Ok(json!([profile])),
+            _ => panic!("unexpected {method}"),
+        })
+        .unwrap();
+        assert_eq!(result["friends"][0]["name"], expected);
+    }
+}
+
+#[test]
 fn every_legacy_avatar_shape_and_friend_name_is_preserved() {
     let shapes = [
         json!({"raw":{"chatName":"Group","picturePath":" /group "}}),

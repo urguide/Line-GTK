@@ -39,6 +39,8 @@ pub struct Profile {
 pub struct ChatInfo {
     pub mid: String,
     pub name: String,
+    #[serde(rename = "displayNameOverridden", default)]
+    pub alias: Option<String>,
     #[serde(default)]
     pub kind: String,
     #[serde(rename = "avatarPath", default)]

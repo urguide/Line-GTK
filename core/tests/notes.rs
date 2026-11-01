@@ -26,3 +26,23 @@ fn malformed_notes_are_errors_but_empty_lists_are_valid() {
         json!({"posts":[],"cursor":null})
     );
 }
+#[test]
+fn post_and_comment_authors_use_contact_alias_once_per_author() {
+    let mut notes = serde_json::json!({
+        "post":{"author":"u1","authorName":"Public"},
+        "comments":[{"author":"u1","authorName":"Public"},{"author":"u2","authorName":"Unknown"}]
+    });
+    let mut calls = Vec::new();
+    line_rust_core::notes::resolve_author_names(&mut notes, |mid| {
+        calls.push(mid.to_owned());
+        if mid == "u1" {
+            Ok(serde_json::json!({"displayName":"Public","displayNameOverridden":"Alias"}))
+        } else {
+            anyhow::bail!("offline")
+        }
+    });
+    assert_eq!(notes["post"]["authorName"], "Alias");
+    assert_eq!(notes["comments"][0]["authorName"], "Alias");
+    assert_eq!(notes["comments"][1]["authorName"], "Unknown");
+    assert_eq!(calls.iter().filter(|mid| *mid == "u1").count(), 1);
+}

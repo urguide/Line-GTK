@@ -48,7 +48,7 @@ pub(super) struct AppState {
     pub chat_list: gtk::ListBox,
     pub message_list: virtual_list::VirtualMessageList,
     pub message_scroll: gtk::ScrolledWindow,
-    pub composer: gtk::Entry,
+    pub composer: super::composer::Composer,
     pub mention_ui: Rc<super::mentions::MentionUi>,
     pub composer_row: gtk::Box,
     pub reply_bar: gtk::Box,
